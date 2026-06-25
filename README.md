@@ -15,8 +15,9 @@ A framework-free guide to building agentic systems from first principles — mem
 ## Build locally
 
 ```bash
-# Install mdBook: https://github.com/rust-lang/mdBook
-cargo install mdbook
+# Install mdBook (pick one)
+brew install mdbook          # macOS
+# cargo install mdbook       # if you have Rust
 
 cd building-agentic-systems
 mdbook build
