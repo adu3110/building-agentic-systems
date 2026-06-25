@@ -1,0 +1,27 @@
+[book]
+title = "Building Agentic Systems"
+authors = ["Aditi Chatterji"]
+description = "A framework-free guide to building agentic systems from first principles — memory, tools, planning, evaluation, and coordination."
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+site-url = "/building-agentic-systems/"
+git-repository-url = "https://github.com/adu3110/building-agentic-systems"
+edit-url-template = "https://github.com/adu3110/building-agentic-systems/edit/main/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+mathjax-support = true
+
+[output.html.search]
+enable = true
+limit-results = 30
+
+[output.html.playground]
+editable = true
+copyable = true
