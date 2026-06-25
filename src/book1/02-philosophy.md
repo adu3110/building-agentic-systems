@@ -1,83 +1,134 @@
-# 2. Overview and Philosophy
+# 1. Overview and Philosophy
 
-## The agent stack
+## The agent stack, exposed
 
-Most "agent frameworks" bundle six separable layers:
+Every agent framework bundles the same six layers. They just don't tell you that.
 
 ```
-┌─────────────────────────────────────────┐
-│  Application (your domain logic)        │
-├─────────────────────────────────────────┤
-│  Agent loop (observe / act / update)    │
-├─────────────────────────────────────────┤
-│  Memory & state (typed, not chat)       │
-├─────────────────────────────────────────┤
-│  Context assembly (what enters prompt)  │
-├─────────────────────────────────────────┤
-│  Tools & permissions (actions + gates)  │
-├─────────────────────────────────────────┤
-│  Evaluation & logging (trajectories)    │
-└─────────────────────────────────────────┘
-         LLM API (replaceable)
+┌─────────────────────────────────────────────────────────────┐
+│  Your domain logic (CaseBot: account review, flag, close)   │
+├─────────────────────────────────────────────────────────────┤
+│  Agent loop  (observe → decide → act → update → repeat)     │
+├─────────────────────────────────────────────────────────────┤
+│  Memory & state  (typed cells, not chat transcript)         │
+├─────────────────────────────────────────────────────────────┤
+│  Context assembly  (what actually enters the prompt)        │
+├─────────────────────────────────────────────────────────────┤
+│  Tools & permissions  (registered actions + access gates)   │
+├─────────────────────────────────────────────────────────────┤
+│  Evaluation & logging  (trajectory, properties, audit)      │
+└─────────────────────────────────────────────────────────────┘
+              LLM API  (HTTP, replaceable)
 ```
 
-Frameworks collapse these into opaque objects. That works for demos. It fails when:
+LangChain, CrewAI, AutoGen all ship an opaque version of this stack. They optimise for "first demo in 20 lines." That's fine until you need to answer: *Why did the agent waive a fee without approval?*
 
-- Memory grows and the agent "forgets" constraints buried in turn 3
-- A tool succeeds but the agent misinterprets the observation
-- You need to prove what happened for compliance
-- You need to swap the LLM without rewriting the agent
+This series builds every layer so you can answer that question.
 
-**Our philosophy:** own the layers you will debug at 2am.
+## What breaks in production (and which layer is responsible)
+
+| Incident | Real cause | Layer |
+|----------|------------|-------|
+| Agent "forgot" the constraint set in turn 2 | Constraint not in typed store | Memory |
+| Agent called `flagAccount` before reading transactions | Wrong step order | Loop / Planner |
+| Agent waived fee without supervisor approval | Permission gate missing | Tools |
+| Agent looped the same tool call 6 times | No duplicate detection | Loop |
+| Correct data stored, wrong answer produced | Wrong cells in context | Context assembly |
+| Passed demo, failed at 50 messages | Unbounded transcript growth | Context assembly |
+
+You cannot fix layer-3 bugs by tuning the prompt. You need to own the layer.
 
 ## Design principles
 
-### 1. State is explicit
+### 1. State is a program, not a transcript
 
-If the agent "knows" something, it lives in a named memory object — not implicitly in chat history.
+```typescript
+// Bad: state is implicit in message position
+const messages = [
+  { role: "user",      content: "Never waive fees without approval." },
+  // 40 turns of conversation...
+  { role: "assistant", content: "I'll waive the $50 fee." }  // violated
+];
 
-### 2. Actions are typed
-
-Every tool call has a schema, permission check, and logged result. No free-form string execution.
-
-### 3. The unit of evaluation is the trajectory
-
-A correct final answer reached by unsafe tool use is a failure in regulated domains.
-
-### 4. Framework-free core, framework-optional edges
-
-The loop, memory store, tool registry, and trajectory logger are ~500 lines of Python. LLM calls are HTTP. Storage is SQLite or files.
-
-### 5. Build the naive version first
-
-Start with chat-only. Watch it fail. Then add the layer that fixes that failure. This book follows that order.
-
-## What we are not building
-
-- A general-purpose coding assistant UI (terminal, file tree, diff views)
-- A multi-agent swarm in Book 1 (that's Book 3)
-- An RL-trained policy in Book 1 (Book 2 introduces RL-ready logging)
-
-## Architecture preview
-
-CaseBot's core loop:
-
-```python
-while not done:
-    observation = env.observe()
-    plan = planner.next_step(observation, memory)
-    if plan.action == "tool":
-        result = tools.dispatch(plan.tool, plan.args)
-        memory.write_observation(result)
-        trajectory.log(ActionType.TOOL_CALL, plan, result)
-    elif plan.action == "answer":
-        trajectory.log(ActionType.ANSWER, plan)
-        done = True
-    elif plan.action == "escalate":
-        trajectory.log(ActionType.ESCALATE, plan)
-        done = True
+// Good: state is a named, typed object
+memory.write({
+  key: "feeWaiverPolicy",
+  value: "requires_supervisor_approval",
+  kind: "constraint",
+  criticality: 1.0,   // always injected, never dropped under token pressure
+});
 ```
 
-We will implement each piece across the next chapters.
+### 2. Actions are typed and validated before dispatch
+
+```typescript
+// Bad: let the LLM emit whatever it wants
+eval(llmResponse);  // never
+
+// Good: registered schema, validated args, permission check
+const result = await registry.run({
+  name: "flagAccount",
+  args: { accountId: "456", reason: "unusual_pattern" },
+  agentPermissions: new Set(["read:accounts"]),
+  // missing "write:accounts" → ToolResult { success: false, error: "permission_denied" }
+});
+```
+
+### 3. The unit of evaluation is the trajectory, not the final answer
+
+```
+Task: Review account 456 for fraud. Flag if suspicious.
+
+Run A — Final answer: "Flagged"  ✓ correct
+  step 1: flagAccount("456")  ← no prior lookup, no constraint check
+
+Run B — Final answer: "Flagged"  ✓ correct
+  step 1: getAccount("456")
+  step 2: getTransactions("456")
+  step 3: check constraints → fraud_review_active = true
+  step 4: flagAccount("456")  ← after full protocol
+```
+
+Run A scores 100% on accuracy. Run A is a compliance failure.
+
+### 4. The LLM is a component, not the architecture
+
+```
+LLM decides WHAT to do.
+TypeScript decides WHETHER it's allowed.
+TypeScript decides WHAT state is updated.
+TypeScript decides WHAT gets logged.
+```
+
+Swap `gpt-4o` for `claude-3-5-sonnet` without touching the loop, memory, tools, or eval.
+
+### 5. Build naive first, measure the failure, add the layer
+
+Week 1: chat-only loop. Works on demos.
+Week 2: first constraint violation. Add typed memory.
+Week 3: context overflow at 40 turns. Add context assembly.
+Week 4: tool loop in production. Add duplicate detection + step budget.
+
+This book follows that progression.
+
+## The running example: CaseBot
+
+CaseBot is a regulated case-resolution agent:
+- Looks up customer accounts and transaction history
+- Applies business rules (some require supervisor approval)
+- Flags accounts for review when patterns match
+- Logs every step for compliance audit
+
+```
+stateful-agent-lab/
+├── src/
+│   ├── agent.ts        ← loop
+│   ├── memory.ts       ← typed state
+│   ├── planner.ts      ← planning
+│   ├── tools.ts        ← registry + dispatch
+│   └── trajectory.ts   ← logging
+└── tests/
+    └── properties.test.ts  ← trajectory invariants
+```
 
 **Next →** [The Minimal Agent Loop](./03-agent-loop.md)

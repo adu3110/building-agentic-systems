@@ -1,66 +1,195 @@
-# 9. Stop Conditions and Escalation
+# 8. Stop Conditions and Escalation
 
-## When to stop
+## Stop is not an error
 
-An agent must terminate explicitly:
+In regulated workflows, a correct `ESCALATE` beats a wrong `ANSWER`. Escalation is a first-class outcome, not a fallback.
 
-| Condition | Action |
-|-----------|--------|
-| Task answered | `answer` + log |
-| Max steps hit | escalate or fail closed |
-| Permission denied on required tool | escalate |
-| Constraint violation detected | refuse + escalate |
-| Duplicate tool call | escalate |
-| Low confidence (optional) | ask human |
-
-```python
-if step >= max_steps:
-    return escalate("max_steps_exceeded")
-if duplicate_tool_call(trajectory, plan):
-    return escalate("loop_detected")
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Terminal states                                             │
+│                                                              │
+│  ANSWER     → task completed by the agent                   │
+│  ESCALATE   → agent correctly defers to human               │
+│  FAIL       → unrecoverable error (max steps, crash)        │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Escalation is success, not failure
+## Stop conditions
 
-In regulated workflows, **correct escalation** beats **wrong automation**.
+```typescript
+// src/stop_conditions.ts
+import type { Trajectory } from "./trajectory.js";
+import type { MemoryStore } from "./memory.js";
+import type { Action } from "./types.js";
 
-CaseBot escalation payload:
+export interface StopCondition {
+  name: string;
+  check(params: {
+    step: number;
+    action: Action;
+    trajectory: Trajectory;
+    memory: MemoryStore;
+  }): { stop: boolean; reason?: string };
+}
 
-```python
-{
-    "case_id": "456",
-    "reason": "destructive_action_required_but_not_authorized",
-    "trajectory_id": "tr_abc123",
-    "memory_snapshot": store.snapshot(),
+// ── 1. Max steps ──────────────────────────────────────────────────────────────
+
+export const maxStepsCondition = (max: number): StopCondition => ({
+  name: "max_steps",
+  check: ({ step }) => ({ stop: step >= max, reason: "max_steps_exceeded" }),
+});
+
+// ── 2. Duplicate tool call ────────────────────────────────────────────────────
+
+export const duplicateToolCondition: StopCondition = {
+  name: "duplicate_tool",
+  check: ({ action, trajectory }) => {
+    if (action.type !== "toolCall") return { stop: false };
+    const sig = JSON.stringify({ tool: action.tool, args: action.args });
+    const seen = trajectory.steps.some(
+      s => s.actionType === "toolCall" &&
+           JSON.stringify({ tool: s.action?.tool, args: s.action?.args }) === sig,
+    );
+    return { stop: seen, reason: "duplicate_tool_call" };
+  },
+};
+
+// ── 3. Constraint violation ───────────────────────────────────────────────────
+
+export const constraintViolationCondition: StopCondition = {
+  name: "constraint_violation",
+  check: ({ action, memory }) => {
+    if (action.type !== "toolCall") return { stop: false };
+
+    const constraints = memory.getConstraints();
+    for (const c of constraints) {
+      const content = typeof c.value === "string" ? c.value : JSON.stringify(c.value);
+
+      // Example: constraint says "no_outbound_transfers" and agent tries to transfer
+      if (content.includes("no_outbound_transfers") && action.tool === "initiateTransfer") {
+        return { stop: true, reason: "constraint_violation:no_outbound_transfers" };
+      }
+    }
+    return { stop: false };
+  },
+};
+
+// ── 4. Destructive action without approval ────────────────────────────────────
+
+export const destructiveWithoutApprovalCondition = (
+  registry: { schemas(): Array<{ name: string; isDestructive: boolean }> },
+  approvedTools: Set<string>,
+): StopCondition => ({
+  name: "destructive_without_approval",
+  check: ({ action }) => {
+    if (action.type !== "toolCall") return { stop: false };
+    const schema = registry.schemas().find(s => s.name === action.tool);
+    if (schema?.isDestructive && !approvedTools.has(action.tool!)) {
+      return { stop: true, reason: `destructive_action_requires_approval:${action.tool}` };
+    }
+    return { stop: false };
+  },
+});
+```
+
+## Using stop conditions in the loop
+
+```typescript
+// src/agent.ts (updated)
+export class AgentLoop {
+  constructor(
+    private task: string,
+    private memory: MemoryStore,
+    private planner: TaskPlanner,
+    private tools: ToolRegistry,
+    private trajectory: Trajectory,
+    private stopConditions: StopCondition[] = [],
+    private maxSteps = 10,
+  ) {}
+
+  async run(): Promise<string> {
+    this.memory.writeTask(this.task);
+
+    for (let step = 0; step < this.maxSteps; step++) {
+      const action = await this.planner.next(this.memory.snapshot());
+
+      // Check all stop conditions before dispatching
+      for (const condition of this.stopConditions) {
+        const { stop, reason } = condition.check({
+          step, action, trajectory: this.trajectory, memory: this.memory,
+        });
+        if (stop) return this.escalate(reason ?? condition.name, step);
+      }
+
+      if (action.type === "toolCall") {
+        const result = await this.tools.run(action.tool!, action.args ?? {});
+        this.memory.writeObservation(action.tool!, result);
+        this.trajectory.log({ step, actionType: "toolCall", action, result });
+        result.success
+          ? this.planner.markStepDone(action.tool)
+          : this.planner.markStepFailed(result.error!);
+
+      } else if (action.type === "answer") {
+        this.trajectory.log({ step, actionType: "answer", action });
+        return action.text ?? "";
+
+      } else if (action.type === "escalate") {
+        return this.escalate(action.reason ?? "agent_request", step);
+      }
+    }
+
+    return this.escalate("max_steps_exceeded", this.maxSteps);
+  }
+
+  private escalate(reason: string, step: number): string {
+    this.trajectory.log({ step, actionType: "escalate", reason });
+    return `ESCALATED:${reason}`;
+  }
 }
 ```
 
-Human reviewers need state, not chat logs.
+## Escalation payload
 
-## Permission gates
+When escalating, give the human everything they need:
 
-Before destructive tools:
+```typescript
+interface EscalationPayload {
+  caseId: string;
+  reason: string;
+  trajectoryId: string;
+  stepCount: number;
+  memorySnapshot: object;
+  proposedAction?: object;
+}
 
-```python
-if schema.is_destructive and not human_approved(case_id, action):
-    return Action(type="escalate", reason="supervisor_approval_required")
+function buildEscalationPayload(
+  caseId: string, reason: string,
+  trajectory: Trajectory, memory: MemoryStore,
+  pendingAction?: Action,
+): EscalationPayload {
+  return {
+    caseId,
+    reason,
+    trajectoryId: trajectory.id,
+    stepCount: trajectory.steps.length,
+    memorySnapshot: memory.snapshot(),
+    proposedAction: pendingAction,
+  };
+}
 ```
 
-Book 3 adds multi-agent approval via ledger.
+## Decision table
 
-## Refusal
-
-Some requests violate hard constraints — refuse without tool calls:
-
-```python
-if violates_constraint(user_request, store.get_constraints()):
-    return Action(type="answer", text="Cannot proceed: fee waiver requires approval.")
 ```
-
-## Confidence gating (optional)
-
-`reasoning-trace` computes per-token entropy from logprobs. High entropy on a tool-selection token → escalate instead of act. Not required for CaseBot v1, but useful for high-stakes domains.
-
-**Companion:** [reasoning-trace](https://github.com/adu3110/reasoning-trace)
+Condition                          Action
+──────────────────────────────────────────────────────────
+step >= maxSteps                   ESCALATE max_steps_exceeded
+duplicate (tool, args)             ESCALATE duplicate_tool_call
+constraint violated                ESCALATE constraint_violation
+destructive without approval       ESCALATE approval_required
+tool returns permission_denied     ESCALATE (let planner decide)
+plan failed after maxReplans       ESCALATE replan_exhausted
+model returns escalate action      ESCALATE agent_request
+```
 
 **Next →** [Trajectory Logging](./10-trajectory.md)

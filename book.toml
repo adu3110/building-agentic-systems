@@ -16,6 +16,7 @@ edit-url-template = "https://github.com/adu3110/building-agentic-systems/edit/ma
 default-theme = "light"
 preferred-dark-theme = "navy"
 mathjax-support = true
+additional-css = ["theme/custom.css"]
 
 [output.html.search]
 enable = true

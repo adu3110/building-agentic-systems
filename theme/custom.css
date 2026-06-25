@@ -1,0 +1,134 @@
+/* ── Typography ──────────────────────────────────────────────────────────────*/
+
+/* Page title (h1) */
+.content main h1 {
+  font-size: 1.55rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: 0;
+  margin-bottom: 1.4rem;
+  border-bottom: 1px solid var(--table-border-color);
+  padding-bottom: 0.6rem;
+}
+
+/* Section headings (h2) — sleek, no thick coloured border */
+.content main h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 2.2rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0;
+  border-bottom: none;
+  border-left: 2px solid var(--table-border-color);
+  padding-left: 0.6rem;
+  color: var(--fg);
+}
+
+/* Subsection headings (h3) — smaller, lighter */
+.content main h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg);
+  margin-top: 1.6rem;
+  margin-bottom: 0.4rem;
+  border: none;
+  padding: 0;
+}
+
+/* h4 — inline label style */
+.content main h4 {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--sidebar-fg);
+  margin-top: 1.2rem;
+  margin-bottom: 0.3rem;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────────*/
+
+/* Part titles (# Book 1 etc.) — subtle uppercase label */
+.sidebar .part-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg);
+  opacity: 0.55;
+  margin-top: 1.4rem;
+  margin-bottom: 0.3rem;
+  padding-left: 0.75rem;
+}
+
+/* Sidebar items — tighter, smaller */
+.sidebar ol li a {
+  font-size: 0.82rem;
+  padding: 0.2rem 0.75rem;
+  line-height: 1.4;
+}
+
+/* Active item */
+.sidebar ol li.active > a {
+  font-weight: 600;
+}
+
+/* ── Prose ───────────────────────────────────────────────────────────────────*/
+
+.content main {
+  font-size: 0.93rem;
+  line-height: 1.7;
+}
+
+/* Tables — tighter */
+.content main table {
+  font-size: 0.85rem;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.content main table th {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: var(--table-header-bg);
+}
+
+.content main table td,
+.content main table th {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--table-border-color);
+}
+
+/* Code blocks */
+.content main pre {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  border-radius: 4px;
+  padding: 1rem 1.1rem;
+}
+
+/* Inline code */
+.content main code:not(pre code) {
+  font-size: 0.8rem;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+/* Horizontal rule — thin */
+.content main hr {
+  border: none;
+  border-top: 1px solid var(--table-border-color);
+  margin: 2rem 0;
+}
+
+/* Blockquote — slim left border only */
+.content main blockquote {
+  border-left: 2px solid var(--table-border-color);
+  padding-left: 0.8rem;
+  margin-left: 0;
+  color: var(--sidebar-fg);
+  font-style: italic;
+}
