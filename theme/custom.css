@@ -1,3 +1,10 @@
+/* ── Prose font — restore to mdBook default (was overridden) ────────────────*/
+
+.content main {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
 /* ── Headings — style only, no font-size changes ─────────────────────────────*/
 
 /* h2 — slim left border instead of thick coloured bar */
