@@ -19,18 +19,14 @@
   font-weight: 600;
 }
 
-/* ── h2: slim left border, no thick underline ────────────────────────────────*/
+/* ── h2/h3: plain, no borders ────────────────────────────────────────────────*/
 
 .content main h2 {
-  border-bottom: none;
-  border-left: 2px solid var(--table-border-color);
-  padding-left: 0.6rem;
+  border: none;
+  padding: 0;
 }
-
-/* ── h3: slightly muted, no border ──────────────────────────────────────────*/
 
 .content main h3 {
   border: none;
   padding: 0;
-  opacity: 0.8;
 }
