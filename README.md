@@ -1,8 +1,8 @@
 # Building Agentic Systems
 
-**Draft — not published yet.** Work locally with `mdbook serve`.
+**Draft — not published yet.** Preview locally with `mdbook serve`.
 
-A framework-free guide to building agentic systems from first principles.
+One overview page plus 30 chapters across three books. Auto-deploy to GitHub Pages is disabled until you're ready.
 
 ## Build locally
 

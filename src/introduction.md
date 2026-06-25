@@ -97,3 +97,7 @@ Most of my work lives on [GitHub](https://github.com/adu3110). I apply these ide
 Background: Master's from IISc, graduate study in CS at UPenn, Stanford LEAD. Earlier work in credit risk, stress testing, and applied ML at HSBC, Wizely, and KPMG — including three filed patents and a 75% scorecard cost reduction.
 
 For the latest: [GitHub](https://github.com/adu3110) · [Contact](https://www.linkedin.com/in/aditi-chatterji-69082b75/)
+
+---
+
+**Start reading →** [Book 1: Overview and Philosophy](./book1/02-philosophy.md)
