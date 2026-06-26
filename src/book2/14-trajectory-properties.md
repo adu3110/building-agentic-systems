@@ -1,168 +1,148 @@
 # 12. Trajectory Properties
 
-## Properties are boolean invariants over steps
+I want to measure more than whether CaseBot gave the right answer. I want to know *how* it got there. Trajectory properties are the mechanism for that.
 
-A **metric** is a number. A **property** is a pass/fail contract.
+A **metric** is a number. A **property** is a pass/fail contract over the sequence of steps. The distinction matters: a metric tells you CaseBot was 87% accurate. A property tells you CaseBot called `flagAccount` before reading account data on run 7 of 100 — and that's the case headed to production.
 
-```typescript
-// src/eval/properties.ts
-import type { Trajectory } from "../trajectory.js";
+## What properties look like
 
-export interface PropertyCheck {
-  name: string;
-  fn: (traj: Trajectory) => boolean;
-}
+From `llm-evals-from-scratch/evals/trajectory.py`:
 
-// ── 1. Required ordering ──────────────────────────────────────────────────────
+```python
+PropertyCheck = Callable[[Trajectory], tuple[bool, str]]
 
-export const lookupBeforeFlag: PropertyCheck = {
-  name: "lookup_before_flag",
-  fn: (traj) => {
-    const tools = traj.toolsUsed();
-    if (!tools.includes("flagAccount")) return true;
-    const lookupIdx = tools.findIndex(t => t === "getAccount");
-    const flagIdx   = tools.findIndex(t => t === "flagAccount");
-    return lookupIdx !== -1 && lookupIdx < flagIdx;
-  },
-};
-
-// ── 2. No destructive action without prior permission check ───────────────────
-
-export const destructiveRequiresLookup: PropertyCheck = {
-  name: "destructive_requires_lookup",
-  fn: (traj) => {
-    const steps = traj.steps;
-    const flagStep = steps.findIndex(s => s.action?.tool === "flagAccount");
-    if (flagStep === -1) return true;
-    return steps.slice(0, flagStep).some(s => s.action?.tool === "getAccount");
-  },
-};
-
-// ── 3. Bounded execution ──────────────────────────────────────────────────────
-
-export const stepsWithinBudget = (max: number): PropertyCheck => ({
-  name: `steps_within_${max}`,
-  fn: (traj) => traj.steps.length <= max,
-});
-
-// ── 4. No duplicate tool calls ────────────────────────────────────────────────
-
-export const noDuplicateToolCalls: PropertyCheck = {
-  name: "no_duplicate_tool_calls",
-  fn: (traj) => {
-    const sigs = traj.steps
-      .filter(s => s.actionType === "toolCall")
-      .map(s => JSON.stringify({ tool: s.action?.tool, args: s.action?.args }));
-    return new Set(sigs).size === sigs.length;
-  },
-};
-
-// ── 5. All tool calls succeeded ───────────────────────────────────────────────
-
-export const allToolCallsSucceeded: PropertyCheck = {
-  name: "all_tool_calls_succeeded",
-  fn: (traj) => traj.failedToolCalls() === 0,
-};
-
-// ── 6. Answer before escalate ─────────────────────────────────────────────────
-
-export const answeredOrEscalated: PropertyCheck = {
-  name: "answered_or_escalated",
-  fn: (traj) => {
-    const outcome = traj.outcome();
-    return outcome === "answer" || outcome === "escalate";
-  },
-};
-
-// ── 7. No PII in logs (regex check on trajectory JSON) ────────────────────────
-
-export const noPIILeaked = (piiPatterns: RegExp[]): PropertyCheck => ({
-  name: "no_pii_leaked",
-  fn: (traj) => {
-    const json = JSON.stringify(traj.export());
-    return !piiPatterns.some(p => p.test(json));
-  },
-});
+def permission_before_tool(trajectory: Trajectory) -> tuple[bool, str]:
+    """Every tool call must be preceded by a permission check."""
+    for step in trajectory.tool_calls:
+        prior_types = [s.action.get("type") for s in trajectory.steps[:step.step_id]]
+        if "permission_check" not in prior_types:
+            return False, f"Tool call at step {step.step_id} has no prior permission check"
+    return True, "ok"
 ```
 
-## Composing a property suite
+The signature is fixed: takes a `Trajectory`, returns `(bool, reason_string)`. Simple enough to write in five minutes. Powerful enough to catch compliance failures your accuracy metric never will.
 
-```typescript
-// src/eval/casebot_suite.ts
-import type { PropertyCheck } from "./properties.js";
-import {
-  lookupBeforeFlag,
-  destructiveRequiresLookup,
-  stepsWithinBudget,
-  noDuplicateToolCalls,
-  allToolCallsSucceeded,
-  answeredOrEscalated,
-  noPIILeaked,
-} from "./properties.js";
+## CaseBot property suite
 
-export const CASEBOT_PROPERTIES: PropertyCheck[] = [
-  lookupBeforeFlag,
-  destructiveRequiresLookup,
-  stepsWithinBudget(12),
-  noDuplicateToolCalls,
-  answeredOrEscalated,
-  noPIILeaked([/\b\d{16}\b/]),  // no raw credit card numbers in logs
-];
+These are the seven properties I'd run on every CaseBot trajectory:
+
+```python
+from evals.trajectory import Trajectory, PropertyCheck
+
+def lookup_before_flag(traj: Trajectory) -> tuple[bool, str]:
+    tools = [s.action.get("tool") for s in traj.tool_calls]
+    if "flagAccount" not in tools:
+        return True, "no flag attempted"
+    if "getAccount" not in tools:
+        return False, "flagAccount without prior getAccount"
+    ok = tools.index("getAccount") < tools.index("flagAccount")
+    return ok, "ok" if ok else "wrong order"
+
+def no_duplicate_tool_calls(traj: Trajectory) -> tuple[bool, str]:
+    sigs = [
+        f"{s.action.get('tool')}:{s.action.get('args')}"
+        for s in traj.tool_calls
+    ]
+    if len(sigs) == len(set(sigs)):
+        return True, "ok"
+    return False, f"duplicate: {[s for s in sigs if sigs.count(s) > 1][0]}"
+
+def bounded_steps(traj: Trajectory) -> tuple[bool, str]:
+    limit = 12
+    ok = len(traj.steps) <= limit
+    return ok, f"{len(traj.steps)} steps (limit {limit})"
+
+def ends_with_answer_or_escalate(traj: Trajectory) -> tuple[bool, str]:
+    if not traj.steps:
+        return False, "empty trajectory"
+    final = traj.steps[-1].action_type
+    ok = final in ("response", "escalation")
+    return ok, f"final action: {final}"
+
+def no_pii_in_export(traj: Trajectory) -> tuple[bool, str]:
+    import re, json
+    raw = json.dumps([s.action for s in traj.steps])
+    patterns = [r"\b\d{16}\b", r"\b\d{3}-\d{2}-\d{4}\b"]  # card, SSN
+    for p in patterns:
+        if re.search(p, raw):
+            return False, f"PII pattern found: {p}"
+    return True, "ok"
+
+CASEBOT_SUITE: list[PropertyCheck] = [
+    lookup_before_flag,
+    no_duplicate_tool_calls,
+    bounded_steps,
+    ends_with_answer_or_escalate,
+    no_pii_in_export,
+]
 ```
 
-## What each property catches
+## Running the suite
 
-```
-lookupBeforeFlag
-  catches: agent infers from scratchpad instead of calling getAccount
-  impact:  wrong data, compliance failure
+```python
+from evals.trajectory import evaluate_trajectory, DEFAULT_PROPERTIES
 
-destructiveRequiresLookup
-  catches: flagAccount called without prior data fetch
-  impact:  wrong flag, regulatory exposure
+# Load from casebot export
+traj = load_casebot_trajectory("logs/case456.json")
 
-stepsWithinBudget(12)
-  catches: infinite loops, confused planners
-  impact:  cost, latency, repeated tool charges
-
-noDuplicateToolCalls
-  catches: planner confusion, retry loops without backoff
-  impact:  cost, API rate limits
-
-noPIILeaked
-  catches: raw SSN or card numbers in exported trajectory file
-  impact:  data breach, compliance violation
-```
-
-## Running properties on a trajectory file
-
-```typescript
-// src/eval/check.ts
-import { readFileSync } from "fs";
-import { CASEBOT_PROPERTIES } from "./casebot_suite.js";
-
-const path = process.argv[2];
-const raw  = JSON.parse(readFileSync(path, "utf8"));
-
-let allPass = true;
-for (const check of CASEBOT_PROPERTIES) {
-  const pass = check.fn(raw as any);
-  console.log(`${pass ? "✓" : "✗"} ${check.name}`);
-  if (!pass) allPass = false;
-}
-process.exit(allPass ? 0 : 1);
+# Run default properties
+result = evaluate_trajectory(traj)
+print(result.all_properties_passed)
+for name, (passed, msg) in result.property_results.items():
+    print(f"  {'PASS' if passed else 'FAIL'}  {name}: {msg}")
 ```
 
 ```bash
-ts-node src/eval/check.ts logs/case456.json
-# ✓ lookup_before_flag
-# ✓ destructive_requires_lookup
-# ✓ steps_within_12
-# ✓ no_duplicate_tool_calls
-# ✓ answered_or_escalated
-# ✓ no_pii_leaked
+# Good run output
+  PASS  permission_before_tool: ok
+  PASS  error_logged_before_retry: ok
+  PASS  no_tool_call_after_refusal: ok
 ```
 
-**Companion:** [llm-evals-from-scratch](https://github.com/adu3110/llm-evals-from-scratch)
+## What each property actually catches
+
+I listed these properties because I've seen agents fail each one in production or near-production:
+
+```
+lookup_before_flag
+  Catches: planner skips data fetch because context already contains
+           an account snippet from an earlier turn
+  Why it happens: stale episode cell injected by context assembler
+  Fix: scope all episode cells; check context before flagging
+
+no_duplicate_tool_calls
+  Catches: planner re-issues the same lookup 3 turns later
+  Why it happens: planner prompt doesn't include trajectory summary
+  Fix: add tools_used to planner context; duplicate detection in loop
+
+bounded_steps
+  Catches: infinite replan loop, confused planner cycling
+  Why it happens: tool returns unexpected format, planner can't parse
+  Fix: structured ToolResult, validation in registry
+
+no_pii_in_export
+  Catches: SSN or card number stored in tool result, propagated to log
+  Why it happens: tool returns full API response including PII fields
+  Fix: redact in ToolResult before storing; sensitivity gate in cells
+```
+
+## Property-driven development
+
+I use properties before I add LLM planners. Write the property. Run the scripted dry-run path and confirm it passes. Then add the LLM and run the same property on the first twenty trajectories. Any failures tell you exactly which layer broke — not "the agent is bad."
+
+```bash
+# Run property suite on casebot
+python examples/casebot_regulated.py --dry-run
+# check logs/case456.json manually, or wire into evaluate_trajectory
+
+python examples/casebot_regulated.py --dry-run --bad-run
+# FAIL  lookup_before_flag — see exactly why
+```
+
+## Exercise
+
+Add a property: `constraints_honored_before_flag`. It should check that a constraint cell containing "fraud_review" was present in the trajectory's context (you'd log this from `fetch_memcell_context`). When is `lookup_before_flag` insufficient but this catches the failure?
+
+**Companion:** [`llm-evals-from-scratch/evals/trajectory.py`](https://github.com/adu3110/llm-evals-from-scratch/blob/main/evals/trajectory.py)
 
 **Next →** [Model Failure vs System Failure](./15-model-vs-system.md)

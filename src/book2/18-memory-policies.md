@@ -1,57 +1,118 @@
-# 18. Memory Policies and Forgetting
+# 16. Memory Policies and Forgetting
 
-## Not everything should stay active
+Not everything should stay in memory forever. Without explicit forgetting, three bad things happen: token budgets blow up with stale data, expired facts compete with fresh ones for context space, and PII accumulates past its legal retention window. Forgetting is not a cleanup job — it's a **policy** wired into every memory operation.
 
-Without forgetting:
+## What baseline_v0 does
 
-- Token budget always exceeded
-- Stale facts compete with fresh ones
-- PII accumulates past retention policy
-
-Forgetting is a **policy**, not `del cell`.
-
-## baseline_v0 rules (memcell-rl)
-
-1. **Hard suppress** — expired, quarantined, or superseded cells
-2. **Constraint keep** — always active until explicit release
-3. **Token budget** — drop lowest-criticality background cells first
-4. **Sensitivity gate** — PII cells require scope match
+memcell-rl ships a policy called `baseline_v0`. Here is the logic in plain Python:
 
 ```python
-def baseline_v0(cells, token_budget, task):
-    active = [c for c in cells if c.status == "active"]
-    constraints = [c for c in active if c.cell_type == "constraint"]
-    rest = rank_by_criticality([c for c in active if c not in constraints])
-    selected = constraints + fit_in_budget(rest, token_budget)
+def baseline_v0(cells: list[dict], token_budget: int, task: str) -> list[dict]:
+    active = [c for c in cells if c["status"] == "active"]
+
+    # 1. Constraints always included — cannot be dropped
+    constraints = [c for c in active if c["type"] == "constraint"]
+
+    # 2. Everything else ranked by criticality × recency
+    rest = sorted(
+        [c for c in active if c["type"] != "constraint"],
+        key=lambda c: c["policy_features"]["criticality"],
+        reverse=True,
+    )
+
+    # 3. Fit ranked cells into remaining budget
+    selected = list(constraints)
+    used = sum(estimate_tokens(c["content"]) for c in selected)
+    for cell in rest:
+        cost = estimate_tokens(cell["content"])
+        if used + cost <= token_budget:
+            selected.append(cell)
+            used += cost
+
     return selected
 ```
 
-## Quarantine
+Constraints in, always. Everything else ranked by criticality, truncated at budget.
 
-When a fact conflicts with a new observation, don't delete — **quarantine** until resolved:
+## The four forgetting mechanisms
 
-```python
-store.mark_status(old_id, "quarantined")
-store.write(new_cell, status="pending_review")
+```mermaid
+stateDiagram-v2
+  [*] --> active: write()
+  active --> superseded: supersede() — new version written
+  active --> quarantined: quarantine() — conflict pending resolution
+  active --> expired: TTL reached — expiresAt in the past
+  superseded --> [*]: retained for audit
+  quarantined --> active: resolution clears it
+  expired --> [*]: excluded from context
 ```
 
-## Feedback loop
+| Mechanism | When to use | What it means |
+|-----------|-------------|---------------|
+| `supersede` | Balance updated, fact changed | Old version kept for audit, new one active |
+| `quarantine` | Two agents disagree (Book 3) | Cell held pending human or resolver review |
+| `expired` | PII retention window ended | TTL set on write, auto-excluded from context |
+| `soft_delete` | Correction, data error | Content replaced with `[deleted]`, audit trail preserved |
 
-After task completion, score memory decisions:
+## Setting TTL on PII cells
 
 ```python
-# memcell-rl /v1/cells/feedback
-{
-  "transition_id": "tr_abc",
-  "reward": 0.82,
-  "signals": {
-    "task_success": true,
-    "stale_memory_error": false,
-    "token_budget_ok": true
-  }
-}
+from datetime import datetime, timedelta
+
+# Account holder's SSN — must expire after 30 days per policy
+memcell_post("/v1/cells/write", {
+    "type": "fact",
+    "scope": {"case": "456"},
+    "content": "SSN on file: ***-**-1234",
+    "sensitivity": "restricted",
+    "valid_until": (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",
+    "policy_features": {"criticality": 0.9},
+})
 ```
 
-Bad suppress decisions get negative reward — training data for later policy improvement.
+After 30 days, `decide()` excludes this cell from context. It remains in the database for audit. The agent can't accidentally use it.
+
+## Quarantine in practice
+
+When the fraud engine and the account lookup return contradictory risk scores:
+
+```python
+# Quarantine the stale assessment
+memcell_post("/v1/cells/quarantine", {
+    "cell_id": old_risk_cell_id,
+    "reason": "contradicted_by:fraud_engine_v2",
+})
+# Write fresh assessment
+memcell_post("/v1/cells/write", {
+    "type": "fact",
+    "scope": {"case": "456"},
+    "content": "risk_score: high (fraud_engine_v2)",
+    "policy_features": {"criticality": 0.8},
+})
+```
+
+The quarantined cell is invisible to `decide()` until explicitly cleared. No silent merging.
+
+## Feedback loop: learning from forgetting
+
+Every `decide()` call in memcell-rl creates an RL transition. When a case succeeds, the feedback scores the memory decisions:
+
+```python
+memcell_post("/v1/cells/feedback", {
+    "query_id": decision["query_id"],
+    "transition_id": decision["transition_id"],
+    "task_success": True,
+    "unsafe_action": False,
+    "stale_memory_error": False,
+    "tokens_used": 850,
+    "latency_ms": 340,
+})
+```
+
+A run where a stale cell caused a wrong answer gets `stale_memory_error: True` and negative reward. Over time, `baseline_v0` can be replaced with a learned policy trained on these transitions — that's Book 2's last chapter.
+
+## Exercise
+
+Write a constraint cell for case 456 with `valid_until` set 10 seconds in the future. Sleep 15 seconds. Call `decide()`. Confirm the constraint is no longer in `selected_cells`. Does CaseBot still pass `lookup_before_flag` without it?
 
 **Next →** [RL-Ready Transitions](./19-rl-transitions.md)

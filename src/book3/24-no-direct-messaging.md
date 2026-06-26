@@ -1,46 +1,63 @@
-# 24. Why Direct Messaging Breaks
+# 21. Why Direct Messaging Breaks
 
-## The multi-agent antipattern
+When people design multi-agent systems for the first time, they build agent-to-agent messaging. It seems natural — agents are like people, people send messages. The problem is that agent-to-agent messages have none of the properties you actually need: they're not ordered, not auditable, not replayable, and when two agents disagree about the same fact, there's no record of either claim.
 
-```python
-agent_a.tell(agent_b, "I think account 456 is fine")
-agent_b.tell(agent_a, "Flag it anyway")
-# Who wins? Where was this logged? Can compliance replay it?
-```
+Let me show you what goes wrong.
 
-Direct agent-to-agent messages:
-
-- Are hard to audit
-- Race under parallel execution
-- Hide implicit state
-- Resemble human Slack, not systems design
-
-## Shared state without a ledger
-
-Shared Python dict:
+## The direct messaging pattern
 
 ```python
-shared = {"account_456_status": "active"}  # both agents mutate
+# Seems fine
+agent_a.send(agent_b, {"message": "account 456 looks clean"})
+agent_b.send(agent_a, {"message": "flag it anyway, fraud engine triggered"})
 ```
 
-Works until two agents write concurrently. Last write wins. Debugging is nightmare fuel.
+Now ask the compliance team: *what did each agent know at the time of flagging? Who decided first? If both sent conflicting instructions, which one took effect?*
+
+You can't answer any of these. The messages are gone.
+
+## The shared mutable dict pattern
+
+```python
+shared_state = {"account_456_status": "active"}
+
+# Agent A and Agent B both do this:
+shared_state["account_456_status"] = "flagged"   # race condition
+```
+
+Last write wins. No ordering guarantee. No audit trail. If two agents write concurrently, you get a result that's either A's or B's depending on timing — and you can't tell which.
+
+## What you actually need
+
+For regulated workflows, I need four things from multi-agent coordination:
+
+1. **Ordering** — I can replay the sequence of decisions
+2. **Attribution** — I know which agent wrote which entry
+3. **Conflict detection** — two agents disagree → the system notices
+4. **Immutability** — no agent can change a past entry
+
+That's an append-only log with typed entries and a hash chain. It already exists: `agent-ledger`.
 
 ## The ledger model
 
-Agents **only**:
+Agents communicate by writing to the ledger and reading from it. Never directly.
 
-1. Read current reconstructed state from ledger
-2. Append one typed entry
-3. Never mutate past entries
+```mermaid
+flowchart LR
+  A1[DiagnoserAgent] --> L[(LEDGER.md)]
+  A2[FixerAgent] --> L
+  A3[ResolverAgent] --> L
+  L --> A1
+  L --> A2
+  L --> A3
+```
 
-Coordination emerges from **ordered log**, not chat.
+The ledger is the single shared truth. Every agent appends its observations, decisions, and tool results as typed entries. No agent modifies past entries. State is reconstructed by replaying the log.
 
 ## When direct messaging is OK
 
-- Research prototypes
-- Single-user demos
-- Low-stakes brainstorming sub-agents that don't commit actions
+I want to be honest: for research prototypes and low-stakes brainstorming agents, direct messaging is fine. If nothing irreversible happens and you don't need an audit trail, it's simpler.
 
-Not for regulated CaseBot production.
+For CaseBot — regulated financial case resolution — it's not OK. Every agent action is a potential compliance artifact.
 
 **Next →** [Append-Only Coordination Logs](./25-ledger.md)

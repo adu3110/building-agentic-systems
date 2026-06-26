@@ -1,124 +1,128 @@
 # 15. Retrieval vs Memory vs Context
 
-## Three things agents confuse
+Three different things. Agents confuse them constantly. Let me pin down exactly what each one is and when to use each.
 
+## Three different things
+
+```mermaid
+flowchart TB
+  subgraph R [Retrieval]
+    direction LR
+    Q[query] --> V[(vector index)] --> C1[relevant chunks]
+  end
+  subgraph M [Memory]
+    direction LR
+    W[write typed cell] --> S[(cell store)] --> L[deterministic lookup]
+  end
+  subgraph C [Context]
+    direction LR
+    A[assemble this turn] --> P[prompt window] --> LLM[LLM]
+  end
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  RETRIEVAL                                                          │
-│  Fetching semantically similar chunks from a vector index at        │
-│  query time. Stateless. Results vary per query.                     │
-│  "Find me facts about account 456"                                  │
-├─────────────────────────────────────────────────────────────────────┤
-│  MEMORY                                                             │
-│  Typed, named, durable state the agent explicitly maintains.        │
-│  Deterministic lookup. Survives turns, replans, restarts.           │
-│  memory.getConstraints("case:456") → same result every time         │
-├─────────────────────────────────────────────────────────────────────┤
-│  CONTEXT                                                            │
-│  What is actually in the prompt window this turn.                   │
-│  Assembled from memory (+ optional retrieval) under token budget.   │
-│  Ephemeral — not stored, not persisted.                             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+| | Retrieval | Memory | Context |
+|---|---|---|---|
+| What it is | Fuzzy search over a corpus | Named, typed, durable state | What the LLM sees this turn |
+| Deterministic? | No | Yes | Yes (once assembled) |
+| Survives restarts? | Yes (index) | Yes (cell store) | No |
+| Grows unbounded? | Yes | Controlled by lifecycle | No (budget-capped) |
+| Example | Policy PDFs, case history | Fraud constraint, account balance | Assembled slice of memory |
 
 ## When to use each
 
+I think about it this way:
+
 ```
-Constraint "no outbound transfers"      → MEMORY  (deterministic, criticality 1.0)
-Account balance fetched from API        → MEMORY  (typed fact, supersedable)
-Business policy doc (PDF, 200 pages)    → RETRIEVAL  (too large for context)
-Agent's current decision               → CONTEXT  (in this prompt only)
-Past case summaries for reference      → RETRIEVAL + selective MEMORY
+Constraint "no outbound transfers"    → MEMORY
+  It must always be in context. Non-negotiable. criticality=1.0.
+  If it misses once, it's a compliance incident.
+
+Account balance from getAccount       → MEMORY
+  Typed fact. Supersedable. Scoped. Will be in context if criticality high enough.
+
+200-page regulatory policy PDF        → RETRIEVAL
+  Too large to store as typed cells. Query at turn time for relevant sections.
+
+Agent's current decision              → CONTEXT only
+  Ephemeral. Not stored. Just in this prompt.
+
+Past case summaries for reference     → RETRIEVAL (+ optionally MEMORY for key facts)
+  Retrieve similar cases. Extract key constraints into typed cells.
 ```
 
-## Retrieval is not a substitute for memory
+## The anti-pattern: retrieval for everything
 
-```typescript
-// Anti-pattern: use retrieval for everything
-async function getConstraints(caseId: string): Promise<string[]> {
-  return await vectorDB.query(`constraints for case ${caseId}`);
-  // Problems:
-  //   - non-deterministic: may miss a constraint
-  //   - no criticality: no guarantee it appears in context
-  //   - no status: can return superseded / quarantined entries
-  //   - expensive: embedding call every turn
-}
+I see this often: teams put all their agent "memory" in a vector database and retrieve it every turn.
 
-// Correct: constraints live in typed memory
-function getConstraints(caseId: string, store: CellStore): MemoryStateCell[] {
-  return store.constraints(caseId);  // always returns all active constraints
-}
+```python
+# Anti-pattern
+async def get_constraints(case_id: str) -> list[str]:
+    return await vector_db.query(f"constraints for case {case_id}", top_k=5)
+    # Problems:
+    #   - non-deterministic: may miss a constraint on this query
+    #   - no criticality: no guarantee it enters context
+    #   - no status: may return superseded or quarantined entries
+    #   - expensive: embedding call every step
+```
+
+For constraints and critical facts, this is wrong. Retrieval is fuzzy by design. You don't want a fuzzy lookup deciding whether the fraud constraint appears in the prompt.
+
+```python
+# Correct
+def get_constraints(case_id: str) -> list[dict]:
+    # memcell-rl: deterministic, scoped, status-filtered
+    resp = memcell_post("/v1/cells/decide", {
+        "query": f"constraints for {case_id}",
+        "scope": {"case": case_id},
+        "budget_tokens": 800,
+    })
+    return [s for s in resp["selected_cells"] if s["mode"] == "constraint"]
 ```
 
 ## Hybrid: retrieval for background knowledge
 
-For large knowledge bases (e.g. policy documents), retrieval fills in facts that are too bulky to store as typed cells.
+Retrieval does have a role — large background corpora that don't fit in typed cells:
 
-```typescript
-// src/hybrid_assembler.ts
-import type { CellStore } from "./memory_cell.js";
+```python
+def assemble_hybrid_context(task: str, case_id: str, budget_tokens: int) -> str:
+    parts = []
 
-interface VectorChunk {
-  text: string;
-  score: number;
-  source: string;
-}
+    # 1. Typed memory (mandatory + ranked facts) — always first
+    ctx = fetch_memcell_context(task)   # from Book 1
+    parts.append(ctx)
+    used = len(ctx.split())
 
-interface VectorDB {
-  query(text: string, topK: number): Promise<VectorChunk[]>;
-}
+    # 2. Retrieval for background policy docs — only if budget remains
+    remaining = budget_tokens - used
+    if remaining > 200:
+        chunks = vector_db.query(task, top_k=3)
+        for chunk in chunks:
+            if chunk["score"] > 0.75:
+                parts.append(f"[policy:{chunk['source']}] {chunk['text']}")
 
-export async function assembleHybridContext(params: {
-  store: CellStore;
-  vectorDB: VectorDB;
-  task: string;
-  scope: string;
-  budget: number;
-}): Promise<string> {
-  const parts: string[] = [];
-  const budgetChars = params.budget * 4;
-  let used = 0;
-
-  // 1. Constraints — mandatory, budget overrides
-  const constraints = params.store.constraints(params.scope);
-  const constraintBlock = constraints
-    .map(c => `[constraint] ${typeof c.content === "string" ? c.content : JSON.stringify(c.content)}`)
-    .join("\n");
-  parts.push(`## Constraints\n${constraintBlock}`);
-  used += constraintBlock.length;
-
-  // 2. Typed facts from memory
-  const facts = params.store.active({ scope: params.scope, cellType: "fact" });
-  const factBlock = facts.map(f => `[fact:${f.source}] ${JSON.stringify(f.content)}`).join("\n");
-  if (used + factBlock.length < budgetChars * 0.6) {
-    parts.push(`## Known Facts\n${factBlock}`);
-    used += factBlock.length;
-  }
-
-  // 3. Retrieved policy chunks for remaining budget
-  const remaining = budgetChars - used;
-  if (remaining > 500) {
-    const chunks = await params.vectorDB.query(params.task, 3);
-    const retrieved = chunks
-      .filter(c => c.score > 0.75)
-      .map(c => `[policy:${c.source}] ${c.text}`)
-      .join("\n");
-    const trimmed = retrieved.slice(0, remaining);
-    parts.push(`## Relevant Policy\n${trimmed}`);
-  }
-
-  return parts.join("\n\n");
-}
+    return "\n\n".join(parts)
 ```
+
+Memory goes in first, unconditionally. Retrieval fills remaining budget.
 
 ## What lives where in CaseBot
 
 ```
-Store                What                       Why
-──────────────────────────────────────────────────────────────
-CellStore            constraints, facts, plan   Typed, critical, deterministic
-VectorDB             policy documents           Large, background, fuzzy-match ok
-Context (per turn)   Assembled slice of above   Ephemeral, budget-capped
+memcell-rl (typed memory)
+  constraints     fraud_review, no_outbound_transfers   criticality 1.0
+  facts           account balance, transaction list      criticality 0.6
+  episodes        turn summaries                         criticality 0.2 compressible
+
+vector index (if needed)
+  policy docs     regulatory handbook, product rules     fuzzy, background
+
+context (this turn)
+  assembled from memory + optional retrieval chunks
+  ephemeral — not stored, not persisted
 ```
+
+## Exercise
+
+CaseBot doesn't currently use a vector DB. That's intentional — for Book 1, everything fits in typed cells. Think about when you'd add retrieval: if the fraud review policy was a 50-page PDF, how would you structure the hybrid assembler? What stays in memcell-rl and what goes into the vector index?
 
 **Next →** [Memory Policies and Forgetting](./18-memory-policies.md)

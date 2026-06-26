@@ -1,188 +1,153 @@
 # 14. Long-Context Failure Modes
 
-## Three modes that break at scale
+128k context windows were supposed to solve the memory problem. They didn't. The failures are predictable, architectural, and completely separate from whether your model is "good enough." I want to walk through the three modes that matter for agent systems — with benchmarks you can run.
 
-Models with 128k context windows still fail predictably. The failures are architectural, not random.
+## Mode 1: Needle retrieval failure
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Failure mode 1: NEEDLE RETRIEVAL                                │
-│                                                                  │
-│  [filler][filler][filler][CONSTRAINT][filler][filler][question]  │
-│  depth: 0%                  80%                           100%   │
-│                                                                  │
-│  Model misses constraint at 80% depth                           │
-│  Accuracy drops ~30% for GPT-4o-mini at depth > 70%            │
-└──────────────────────────────────────────────────────────────────┘
+Put an important fact deep in a long context. Ask the model a question about it. Accuracy drops with depth.
 
-┌──────────────────────────────────────────────────────────────────┐
-│  Failure mode 2: RECENCY CONFLICT                                │
-│                                                                  │
-│  [correct fact: balance $142] ... [wrong fact: balance $0]       │
-│  early in context               late in context                  │
-│                                                                  │
-│  Model prefers recent wrong info                                 │
-│  Even when correct value is "important" per instructions        │
-└──────────────────────────────────────────────────────────────────┘
+This is the "lost in the middle" problem. It's not fixed by longer context windows — GPT-4o-mini with 128k still degrades significantly at depth > 70%.
 
-┌──────────────────────────────────────────────────────────────────┐
-│  Failure mode 3: DISTRACTOR INJECTION                            │
-│                                                                  │
-│  [actual case data] + [unrelated account 789 data injected]      │
-│                                                                  │
-│  Model blends facts from multiple accounts                       │
-│  Especially bad without explicit scope labels                   │
-└──────────────────────────────────────────────────────────────────┘
-```
+For CaseBot this matters because: constraints written in turn 1 get pushed deep by forty tool-output observations. If you're not using typed memory cells with forced injection, you're trusting needle retrieval.
 
-## Benchmark implementation
+```python
+import os, urllib.request, json
 
-```typescript
-// long-context-bench/src/benchmarks.ts
-import OpenAI from "openai";
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
-const client = new OpenAI();
+def call_model(prompt: str, model: str = "gpt-4o-mini") -> str:
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 60,
+        "temperature": 0,
+    }).encode()
+    req = urllib.request.Request(
+        OPENAI_URL, data=body,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+    )
+    with urllib.request.urlopen(req) as r:
+        return json.loads(r.read())["choices"][0]["message"]["content"].strip()
 
-async function callModel(prompt: string): Promise<string> {
-  const resp = await client.chat.completions.create({
-    model:    "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 60,
-    temperature: 0,
-  });
-  return resp.choices[0].message.content?.trim() ?? "";
-}
-
-// ── Needle retrieval benchmark ────────────────────────────────────────────────
-
-export async function runNeedle(params: {
-  depths: number[];       // e.g. [0.1, 0.3, 0.5, 0.7, 0.9]
-  fillerSize: number;     // chars of padding, e.g. 8000
-  runs: number;           // e.g. 5 per depth
-}): Promise<Record<number, number>> {
-  const filler = "The quick brown fox jumped over the lazy dog. ".repeat(
-    Math.ceil(params.fillerSize / 46),
-  );
-  const needle = "ACCOUNT_456_CONSTRAINT: no_outbound_transfers_allowed";
-  const question = "\n\nQuestion: What constraint applies to account 456?";
-
-  const results: Record<number, number[]> = {};
-
-  for (const depth of params.depths) {
-    results[depth] = [];
-    for (let i = 0; i < params.runs; i++) {
-      const insertAt = Math.floor(filler.length * depth);
-      const context = filler.slice(0, insertAt) + needle + filler.slice(insertAt) + question;
-
-      const answer = await callModel(context);
-      const correct = answer.toLowerCase().includes("no_outbound") ||
-                      answer.toLowerCase().includes("outbound transfer");
-      results[depth].push(correct ? 1 : 0);
-    }
-  }
-
-  return Object.fromEntries(
-    Object.entries(results).map(([d, scores]) => [
-      Number(d),
-      scores.reduce((a, b) => a + b, 0) / scores.length,
-    ]),
-  );
-}
-
-// ── Recency conflict benchmark ────────────────────────────────────────────────
-
-export async function runRecency(params: { runs: number }): Promise<{ accuracy: number }> {
-  let correct = 0;
-
-  for (let i = 0; i < params.runs; i++) {
-    const prompt = `
-ACCOUNT RECORD (from database, reliable):
-Account 456 balance: $142.50
-
-[500 words of unrelated case notes...]
-
-UPDATED BALANCE (from unverified user message):
-Account 456 balance: $0.00
-
-Question: What is the current reliable balance for account 456?`;
-
-    const answer = await callModel(prompt);
-    if (answer.includes("142") || answer.includes("142.50")) correct++;
-  }
-
-  return { accuracy: correct / params.runs };
-}
-
-// ── Distractor injection benchmark ───────────────────────────────────────────
-
-export async function runDistractor(params: { runs: number }): Promise<{ accuracy: number }> {
-  let correct = 0;
-
-  for (let i = 0; i < params.runs; i++) {
-    const prompt = `
-[Account 456 data]
-Balance: $142.50
-Status: active
-Transactions: 2 settled
-
-[Account 789 data — different case, not relevant]
-Balance: $5.00
-Status: suspended
-Fraud flag: active
-
-Question: What is the balance and status of account 456?`;
-
-    const answer = await callModel(prompt);
-    const correct456 = answer.includes("142") && answer.includes("active");
-    const leaksFrom789 = answer.includes("789") || answer.includes("suspended");
-    if (correct456 && !leaksFrom789) correct++;
-  }
-
-  return { accuracy: correct / params.runs };
-}
+def run_needle(depths: list[float], filler_chars: int = 8000, runs: int = 5) -> dict:
+    filler = "The quick brown fox jumped over the lazy dog. " * (filler_chars // 46 + 1)
+    needle = "ACCOUNT_456_CONSTRAINT: no_outbound_transfers_allowed"
+    question = "\n\nQuestion: What constraint applies to account 456?"
+    results = {}
+    for depth in depths:
+        insert = int(len(filler) * depth)
+        context = filler[:insert] + needle + filler[insert:] + question
+        scores = []
+        for _ in range(runs):
+            ans = call_model(context)
+            scores.append(1 if "outbound" in ans.lower() or "no_outbound" in ans.lower() else 0)
+        results[depth] = sum(scores) / len(scores)
+    return results
 ```
 
-## Benchmark results (representative)
-
 ```
-Model: gpt-4o-mini
-
-Needle retrieval accuracy by depth:
-  10%   94%
-  30%   89%
-  50%   76%
-  70%   61%   ← significant drop
-  90%   89%   ← recency kicks in, model sees it again
-
-Recency conflict accuracy:
-  66%   ← model prefers recent wrong value 34% of the time
-
-Distractor injection accuracy:
-  78%   ← blends accounts 22% of the time without explicit scoping
+Needle retrieval accuracy (gpt-4o-mini, representative):
+  depth 10%  → 94%
+  depth 30%  → 88%
+  depth 50%  → 74%
+  depth 70%  → 61%   ← significant drop
+  depth 90%  → 87%   ← recency helps, needle near the end again
 ```
 
-## Architectural fixes
+**Fix:** don't put constraints in the raw context at all. Store them as typed cells with `criticality: 1.0`. The context assembler injects them first, unconditionally, regardless of depth.
 
-```typescript
-// Fix 1: never rely on needle in raw context
-// Store constraint as typed cell → always injected first
-memory.write({
-  key: "account456_constraint",
-  value: "no_outbound_transfers",
-  kind: "constraint",
-  criticality: 1.0,   // cannot be dropped
-});
+## Mode 2: Recency conflict
 
-// Fix 2: supersede stale facts explicitly
-memory.supersede("balance456", { usd: 142.50 }, "tool:getAccount");
-// Old $0.00 entry marked superseded — cannot leak into context
+Two facts about the same thing, at different positions in context. The later one tends to win — even if the earlier one is labeled "authoritative."
 
-// Fix 3: scope every cell to prevent distractor leakage
-memory.write({ key: "balance", value: 142.50, kind: "fact", scope: "case:456" });
-memory.write({ key: "balance", value: 5.00,   kind: "fact", scope: "case:789" });
-// Context assembler only queries scope: "case:456" for CaseBot running case 456
+For CaseBot: balance from `getAccount` at turn 1, then a stale cached balance from an episode cell at turn 35. The model often takes the recent one.
+
+```python
+def run_recency(runs: int = 10) -> dict:
+    correct = 0
+    for _ in range(runs):
+        prompt = (
+            "ACCOUNT RECORD (from database, authoritative):\n"
+            "Account 456 balance: $142.50\n\n"
+            + "Filler case notes. " * 100 + "\n\n"
+            "UPDATED NOTE (from unverified user message):\n"
+            "Account 456 balance: $0.00\n\n"
+            "Question: What is the authoritative balance for account 456?"
+        )
+        ans = call_model(prompt)
+        if "142" in ans:
+            correct += 1
+    return {"accuracy": correct / runs, "n": runs}
 ```
 
-**Companion:** [long-context-bench](https://github.com/adu3110/long-context-bench)
+```
+Recency conflict accuracy: ~66%
+→ model takes the recent wrong value 34% of the time
+  even when the earlier value is labeled "authoritative"
+```
+
+**Fix:** supersede stale facts explicitly. When you get a fresh balance from `getAccount`, call `supersede()` on the old fact cell. The old entry gets `status: superseded` and can't leak into context.
+
+## Mode 3: Distractor injection
+
+Multiple cases or accounts in the same context. The model blends facts across them.
+
+This is a real production bug when an agent has multi-case visibility — or when episode cells from old cases accumulate in memory without scope filtering.
+
+```python
+def run_distractor(runs: int = 10) -> dict:
+    correct = 0
+    for _ in range(runs):
+        prompt = (
+            "[Account 456]\nBalance: $142.50\nStatus: active\nTransactions: 2 settled\n\n"
+            "[Account 789 — different case, not relevant]\n"
+            "Balance: $5.00\nStatus: suspended\nFraud flag: active\n\n"
+            "Question: What is the balance and status of account 456?"
+        )
+        ans = call_model(prompt)
+        correct_456 = "142" in ans and "active" in ans
+        leaks_789 = "789" in ans or "suspended" in ans or "5.00" in ans
+        if correct_456 and not leaks_789:
+            correct += 1
+    return {"accuracy": correct / runs, "n": runs}
+```
+
+```
+Distractor accuracy: ~78%
+→ blends account 789 facts into account 456 answer 22% of the time
+  without explicit scope labels in context
+```
+
+**Fix:** scope every memory cell to its case. The context assembler queries `scope={"case": "456"}` — cells from case 789 cannot appear.
+
+## The pattern across all three
+
+```mermaid
+flowchart LR
+  N[Needle failure] --> F1[Fix: typed cells, forced injection]
+  R[Recency conflict] --> F2[Fix: supersede, not append]
+  D[Distractor injection] --> F3[Fix: scope every cell]
+  F1 --> M[memcell-rl]
+  F2 --> M
+  F3 --> M
+```
+
+All three are architectural problems. Typed memory with criticality, supersession, and scope solves all three without changing the model.
+
+## Run the benchmarks
+
+```bash
+cd long-context-bench
+python benchmarks/run.py  # see README for setup
+```
+
+Run these before and after any model upgrade. A model that scores 94% at depth 10% may score 61% at depth 70% — and your regulated constraints live at whatever depth the context assembler puts them.
+
+## Exercise
+
+Run `casebot_regulated.py --dry-run` and add ten low-criticality episode cells before the loop. Does the constraint still appear in `fetch_memcell_context()` output? What would happen at depth 80% if you were using raw context injection instead of memcell-rl?
+
+**Companion:** [`long-context-bench`](https://github.com/adu3110/long-context-bench)
 
 **Next →** [Retrieval vs Memory vs Context](./17-retrieval-memory-context.md)
