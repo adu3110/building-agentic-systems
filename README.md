@@ -2,16 +2,29 @@
 
 A framework-free guide to building agentic systems from first principles — loop, memory, tools, planning, evaluation, and coordination. No LangChain. No magic in the middle.
 
-Every code block runs. Every chapter follows one case.
+Every code block runs. Book 1 is a build path: run `step01` … `step09`, then CaseBot.
 
-## Quick start
+## Book 1 build path
+
+```bash
+cd memcell-rl
+python3 examples/build/step01_task.py
+python3 examples/build/step02_loop.py
+# … through step09_stops.py
+
+# Step 10 — full CaseBot (memcell server required for live memory):
+uvicorn memcell_rl.app:app --port 8000   # terminal 1
+python3 examples/casebot_regulated.py --dry-run   # terminal 2
+```
+
+## Quick start (CaseBot only)
 
 ```bash
 # Terminal 1 — memory service
 cd memcell-rl && uvicorn memcell_rl.app:app --port 8000
 
-# Terminal 2 — CaseBot (Book 1 running example)
-python examples/casebot_regulated.py --dry-run
+# Terminal 2 — CaseBot (Book 1 finished artifact)
+python3 examples/casebot_regulated.py --dry-run
 
 # Compliance failure demo
 python examples/casebot_regulated.py --dry-run --bad-run

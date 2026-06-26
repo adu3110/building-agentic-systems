@@ -6,16 +6,18 @@
 
 # Book 1: Building an Agentic System
 
-- [1. Overview and Philosophy](./book1/02-philosophy.md)
-- [2. The Minimal Agent Loop](./book1/03-agent-loop.md)
-- [3. State: Chat History Is Not Memory](./book1/04-state.md)
-- [4. Typed Memory Objects](./book1/05-typed-memory.md)
-- [5. Context Assembly Under a Token Budget](./book1/06-context-assembly.md)
-- [6. Tools from Scratch](./book1/07-tools.md)
-- [7. Planning and Scratchpads](./book1/08-planning.md)
-- [8. Stop Conditions and Escalation](./book1/09-stop-escalate.md)
-- [9. Trajectory Logging](./book1/10-trajectory.md)
-- [10. Putting It Together](./book1/11-together.md)
+Build path: run `step01` … `step09` in [`memcell-rl/examples/build/`](https://github.com/adu3110/memcell-rl/tree/main/examples/build), then `casebot_regulated.py`.
+
+- [1. Overview — a task is not an agent](./book1/02-philosophy.md)
+- [2. The minimal loop](./book1/03-agent-loop.md)
+- [3. Tools from scratch](./book1/07-tools.md)
+- [4. Trajectory logging](./book1/10-trajectory.md)
+- [5. Chat history is not memory](./book1/04-state.md)
+- [6. Typed memory cells](./book1/05-typed-memory.md)
+- [7. Context assembly under a budget](./book1/06-context-assembly.md)
+- [8. Planning and scratchpads](./book1/08-planning.md)
+- [9. Stop conditions and escalation](./book1/09-stop-escalate.md)
+- [10. Putting it together — CaseBot](./book1/11-together.md)
 
 # Book 2: Making Agentic Systems Reliable
 
