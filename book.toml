@@ -17,6 +17,7 @@ default-theme = "light"
 preferred-dark-theme = "navy"
 mathjax-support = true
 additional-css = ["theme/custom.css"]
+additional-js = ["theme/mermaid-init.js"]
 
 [output.html.search]
 enable = true

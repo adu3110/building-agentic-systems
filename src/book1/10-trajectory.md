@@ -1,179 +1,126 @@
 # 9. Trajectory Logging
 
-## Why log steps, not just messages
-
 Final answer: *"Account 456 flagged for review."*
 
-Questions compliance asks:
+Compliance asks:
+
 1. Was `getAccount` called before `flagAccount`?
-2. Was the fraud-review constraint present and active?
-3. Was supervisor permission checked before the destructive action?
+2. Was the fraud-review constraint active?
+3. Was supervisor permission checked?
 4. Did the agent loop unnecessarily?
 
 A chat transcript cannot answer these. A **typed trajectory** can.
 
-## Implementation
+## What a trajectory is
 
-```typescript
-// src/trajectory.ts
-import { randomUUID } from "crypto";
-import { writeFileSync } from "fs";
-import type { Action, ActionType, ToolResult } from "./types.js";
+A trajectory is the ordered list of everything the agent did — not what it said, what it **did**:
 
-export interface TrajectoryStep {
-  step:       number;
-  actionType: ActionType;
-  action?:    Action;
-  result?:    ToolResult;
-  reason?:    string;
-  timestamp:  string;
-}
+```mermaid
+gantt
+  title Case 456 trajectory (good run)
+  dateFormat X
+  axisFormat %s
 
-export class Trajectory {
-  readonly id: string = randomUUID();
-  readonly steps: TrajectoryStep[] = [];
-  readonly startedAt = new Date().toISOString();
-
-  log(params: Omit<TrajectoryStep, "timestamp">): void {
-    this.steps.push({ ...params, timestamp: new Date().toISOString() });
-  }
-
-  // Export for eval harness (Book 2)
-  export(): object {
-    return {
-      id:         this.id,
-      startedAt:  this.startedAt,
-      stepCount:  this.steps.length,
-      toolsUsed:  this.toolsUsed(),
-      outcome:    this.outcome(),
-      steps:      this.steps,
-    };
-  }
-
-  saveJSON(path: string): void {
-    writeFileSync(path, JSON.stringify(this.export(), null, 2));
-  }
-
-  // ── Derived ───────────────────────────────────────────────────────────────
-
-  toolsUsed(): string[] {
-    return this.steps
-      .filter(s => s.actionType === "toolCall")
-      .map(s => s.action?.tool ?? "unknown");
-  }
-
-  outcome(): "answer" | "escalate" | "incomplete" {
-    const last = this.steps.at(-1);
-    if (!last) return "incomplete";
-    if (last.actionType === "answer")   return "answer";
-    if (last.actionType === "escalate") return "escalate";
-    return "incomplete";
-  }
-
-  successfulToolCalls(): number {
-    return this.steps.filter(
-      s => s.actionType === "toolCall" && s.result?.success === true,
-    ).length;
-  }
-
-  failedToolCalls(): number {
-    return this.steps.filter(
-      s => s.actionType === "toolCall" && s.result?.success === false,
-    ).length;
-  }
-}
+  section Steps
+  getAccount         :0, 1
+  getTransactions    :1, 1
+  answer             :2, 1
 ```
 
-## Example trajectory output
+```python
+@dataclass
+class TrajectoryStep:
+    step: int
+    action_type: str
+    action: dict
+    result: dict | None
+    timestamp: str
+```
+
+Each step records the action **and** the tool result. Auditors see what the agent knew, not just what it claimed.
+
+## Exported JSON
+
+After a run, CaseBot writes `logs/case456.json`:
 
 ```json
 {
-  "id": "a3f2b1c0-...",
-  "startedAt": "2024-06-20T10:30:00Z",
-  "stepCount": 5,
-  "toolsUsed": ["getAccount", "getTransactions", "flagAccount"],
-  "outcome": "answer",
+  "case_id": "456",
+  "task": "Review account 456 for fraud indicators...",
+  "outcome": "Account 456 reviewed. Case closed.",
+  "tools_used": ["getAccount", "getTransactions"],
+  "step_count": 3,
   "steps": [
     {
       "step": 0,
-      "actionType": "toolCall",
-      "action": { "type": "toolCall", "tool": "getAccount", "args": { "accountId": "456" } },
-      "result": { "success": true, "data": { "id": "456", "status": "active", "balanceUsd": 142.50 } },
-      "timestamp": "2024-06-20T10:30:01Z"
-    },
-    {
-      "step": 1,
-      "actionType": "toolCall",
-      "action": { "type": "toolCall", "tool": "getTransactions", "args": { "accountId": "456" } },
-      "result": { "success": true, "data": { "transactions": [...] } },
-      "timestamp": "2024-06-20T10:30:02Z"
-    },
-    {
-      "step": 2,
-      "actionType": "think",
-      "action": { "type": "think", "text": "Balance normal, transactions settled. No fraud indicators." },
-      "timestamp": "2024-06-20T10:30:03Z"
-    },
-    {
-      "step": 3,
-      "actionType": "answer",
-      "action": { "type": "answer", "text": "Account 456 reviewed. No fraud indicators. Case closed." },
-      "timestamp": "2024-06-20T10:30:04Z"
+      "action_type": "tool_call",
+      "action": {"tool": "getAccount", "args": {"accountId": "456"}},
+      "result": {"success": true, "data": {"balance_usd": 142.50}}
     }
   ]
 }
 ```
 
-## Property checks (preview of Book 2)
-
-```typescript
-// tests/properties.test.ts
-
-function lookupBeforeFlag(traj: Trajectory): boolean {
-  const tools = traj.toolsUsed();
-  if (!tools.includes("flagAccount")) return true;           // no flag, no issue
-  return tools.includes("getAccount") &&
-         tools.indexOf("getAccount") < tools.indexOf("flagAccount");
-}
-
-function noDestructiveWithoutLookup(traj: Trajectory): boolean {
-  return lookupBeforeFlag(traj);
-}
-
-function boundedSteps(traj: Trajectory, max: number): boolean {
-  return traj.steps.length <= max;
-}
-
-function noDuplicateToolCalls(traj: Trajectory): boolean {
-  const sigs = traj.steps
-    .filter(s => s.actionType === "toolCall")
-    .map(s => JSON.stringify({ tool: s.action?.tool, args: s.action?.args }));
-  return new Set(sigs).size === sigs.length;
-}
-
-// Run on exported trajectory file
-function checkProperties(traj: Trajectory): Record<string, boolean> {
-  return {
-    lookupBeforeFlag:         lookupBeforeFlag(traj),
-    noDestructiveWithoutLookup: noDestructiveWithoutLookup(traj),
-    boundedSteps:             boundedSteps(traj, 12),
-    noDuplicateToolCalls:     noDuplicateToolCalls(traj),
-  };
-}
+```bash
+python examples/casebot_regulated.py --dry-run
+cat logs/case456.json | python -m json.tool
 ```
 
-## Run with export
+## Property checks
+
+Metrics are numbers. Properties are pass/fail contracts over the trajectory:
+
+```python
+def lookup_before_flag(traj: Trajectory) -> tuple[bool, str]:
+    tools = traj.tools_used()
+    if "flagAccount" not in tools:
+        return True, "no flag attempted"
+    if "getAccount" not in tools:
+        return False, "flagAccount without prior getAccount"
+    return tools.index("getAccount") < tools.index("flagAccount"), "ok"
+```
+
+Run after every case:
 
 ```bash
-ts-node src/agent.ts \
-  --task "Review account 456 for fraud" \
-  --export logs/case456.json
-
-# Output
-cat logs/case456.json | jq '.toolsUsed'
-# ["getAccount", "getTransactions"]
+python examples/casebot_regulated.py --dry-run --bad-run
+# FAIL  lookup_before_flag: flagAccount without prior getAccount
 ```
 
-**Companion:** `stateful-agent-lab/src/trajectory.ts`
+Book 2 extends this with a full eval pipeline in [`llm-evals-from-scratch`](https://github.com/adu3110/llm-evals-from-scratch). Book 1 gives you the core idea: **log steps, check invariants.**
+
+## Good run vs bad run
+
+```mermaid
+flowchart LR
+  subgraph good [Good trajectory]
+    G1[getAccount] --> G2[getTransactions] --> G3[answer]
+  end
+  subgraph bad [Bad trajectory]
+    B1[flagAccount] --> B2[ESCALATED]
+  end
+  good --> PASS[lookup_before_flag PASS]
+  bad --> FAIL[lookup_before_flag FAIL]
+```
+
+Same final answer possible. Different compliance outcome.
+
+## What to log
+
+| Field | Why |
+|-------|-----|
+| `step` | Ordering |
+| `action_type` | tool_call / answer / escalate |
+| `action.tool` + `action.args` | What was attempted |
+| `result.success` + `result.error` | What happened |
+| `timestamp` | Audit timeline |
+
+Do **not** log raw LLM prompts in the compliance trajectory unless policy requires it. Log actions and results.
+
+## Exercise
+
+Add a property check: `no_duplicate_tool_calls` — every `(tool, args)` pair appears at most once. Run good and bad paths. Wire it into the `PROPERTY_CHECKS` list in `casebot_regulated.py`.
+
+**Companion:** [`llm-evals-from-scratch/evals/trajectory.py`](https://github.com/adu3110/llm-evals-from-scratch/blob/main/evals/trajectory.py)
 
 **Next →** [Putting It Together](./11-together.md)

@@ -1,218 +1,111 @@
 # 7. Planning and Scratchpads
 
-## Why "ask the LLM what to do next" is not planning
+"Ask the LLM what to do next" is not planning. It's improvisation. For case 456, I want the agent to follow a protocol: fetch account → fetch transactions → apply heuristics → flag or close. A planner holds that structure between loop iterations.
 
-Without a planner, every loop iteration asks the LLM the full open-ended question: *"What should I do?"* This leads to:
+## Why open-ended prompts fail
+
+Without a planner, every loop iteration asks the same vague question: *what should I do?*
+
+That leads to:
 
 - Non-deterministic step ordering
 - Re-discovering the same next step repeatedly
-- No progress tracking — the agent doesn't know it's done step 2 of 4
+- No progress tracking — the agent doesn't know it's on step 2 of 4
 - No structured replan when a tool fails
 
-A `TaskPlanner` holds state **between steps**:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  TaskPlanner                                                │
-│                                                             │
-│  task: "Review account 456 for fraud; flag if suspicious"  │
-│                                                             │
-│  steps:                                                     │
-│    [0] "fetch account details"    → DONE                    │
-│    [1] "fetch transactions"       → DONE                    │
-│    [2] "apply fraud heuristics"   → IN_PROGRESS             │
-│    [3] "flag or close with summary" → PENDING               │
-│                                                             │
-│  scratchpad:                                                │
-│    "balance $142.50, 2 settled txns, no unusual amounts"    │
-│                                                             │
-│  replansRemaining: 2                                        │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph bad [Without planner]
+    Q1[What should I do?] --> A1[random action]
+    Q2[What should I do?] --> A2[maybe same action again]
+  end
+  subgraph good [With planner]
+    P[Plan: 4 steps] --> S1[step 0: fetch account DONE]
+    S1 --> S2[step 1: fetch txns IN PROGRESS]
+    S2 --> S3[step 2: heuristics PENDING]
+  end
 ```
 
-## Implementation
+## Planner as a replaceable function
 
-```typescript
-// src/planner.ts
-import OpenAI from "openai";
-import type { Action } from "./types.js";
+In CaseBot, the planner is a function signature — not a framework:
 
-type StepStatus = "pending" | "in_progress" | "done" | "failed";
+```python
+Planner = Callable[[int, Trajectory, str], Action]
 
-interface PlanStep {
-  index: number;
-  description: string;
-  status: StepStatus;
-  toolUsed?: string;
-  failureReason?: string;
-}
-
-export class TaskPlanner {
-  private steps: PlanStep[] = [];
-  private scratchpad: string[] = [];
-  private replansRemaining: number;
-  private client = new OpenAI();
-
-  constructor(
-    private task: string,
-    private maxReplans = 2,
-  ) {
-    this.replansRemaining = maxReplans;
-  }
-
-  // ── Decompose ─────────────────────────────────────────────────────────────
-
-  async decompose(): Promise<PlanStep[]> {
-    const resp = await this.client.chat.completions.create({
-      model: "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [{
-        role: "user",
-        content: `Break this task into ordered steps (max 5). Return JSON:
-{"steps": ["step description", ...]}
-
-Task: ${this.task}
-Available tools: getAccount, getTransactions, flagAccount`,
-      }],
-    });
-
-    const { steps } = JSON.parse(resp.choices[0].message.content ?? "{}") as { steps: string[] };
-    this.steps = steps.map((description, index) => ({
-      index, description, status: "pending" as StepStatus,
-    }));
-    return this.steps;
-  }
-
-  // ── Next action ───────────────────────────────────────────────────────────
-
-  async next(memorySnapshot: object): Promise<Action> {
-    if (this.steps.length === 0) await this.decompose();
-
-    const current = this.currentStep();
-    if (!current) return { type: "answer", text: this.summarise() };
-
-    current.status = "in_progress";
-
-    const resp = await this.client.chat.completions.create({
-      model: "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [{
-        role: "user",
-        content: `You are executing step ${current.index + 1}/${this.steps.length}:
-"${current.description}"
-
-Memory: ${JSON.stringify(memorySnapshot, null, 2)}
-Scratchpad: ${this.scratchpad.join("; ")}
-
-Reply with JSON:
-  { "type": "toolCall", "tool": "<name>", "args": {...}, "note": "<scratchpad update>" }
-  { "type": "answer",   "text": "<final answer>" }
-  { "type": "escalate", "reason": "<why>" }`,
-      }],
-    });
-
-    const raw = JSON.parse(resp.choices[0].message.content ?? "{}");
-    if (raw.note) this.scratchpad.push(raw.note);
-
-    return raw as Action;
-  }
-
-  // ── Feedback ──────────────────────────────────────────────────────────────
-
-  markStepDone(toolName?: string): void {
-    const step = this.currentStep();
-    if (step) { step.status = "done"; step.toolUsed = toolName; }
-  }
-
-  markStepFailed(reason: string): void {
-    const step = this.currentStep();
-    if (!step) return;
-    step.status = "failed";
-    step.failureReason = reason;
-
-    if (this.replansRemaining > 0) {
-      this.replansRemaining--;
-      this.replan(reason);
-    }
-  }
-
-  // ── Replan ────────────────────────────────────────────────────────────────
-
-  private replan(failureReason: string): void {
-    // Mark remaining steps pending so next() re-evaluates from current position
-    for (const step of this.steps) {
-      if (step.status === "pending" || step.status === "in_progress") {
-        step.status = "pending";
-      }
-    }
-    this.scratchpad.push(`[replan triggered: ${failureReason}]`);
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  private currentStep(): PlanStep | undefined {
-    return this.steps.find(s => s.status === "pending" || s.status === "in_progress");
-  }
-
-  private summarise(): string {
-    return `Task complete. Steps: ${this.steps.map(s => `${s.description}(${s.status})`).join(", ")}. Notes: ${this.scratchpad.join("; ")}`;
-  }
-
-  progress(): { total: number; done: number; failed: number } {
-    return {
-      total:  this.steps.length,
-      done:   this.steps.filter(s => s.status === "done").length,
-      failed: this.steps.filter(s => s.status === "failed").length,
-    };
-  }
-}
+def good_run_planner(step: int, traj: Trajectory, memory: str) -> Action:
+    script = [
+        Action(type=ActionType.TOOL_CALL, tool="getAccount", args={"accountId": "456"}),
+        Action(type=ActionType.TOOL_CALL, tool="getTransactions", args={"accountId": "456"}),
+        Action(type=ActionType.ANSWER, text="Account 456 reviewed. Case closed."),
+    ]
+    return script[step]
 ```
 
-## Integrating planner with the loop
+The loop calls `planner(step, trajectory, memory_context)`. In `--dry-run`, the planner is a script. In `--live`, it wraps an LLM call with the plan state in the prompt.
 
-```typescript
-// In AgentLoop.run():
-const action = await this.planner.next(this.memory.snapshot());
+Same loop. Different planner. That is the separation from chapter 2.
 
-if (action.type === "toolCall") {
-  const result = await this.tools.run(action.tool!, action.args ?? {});
-  this.memory.writeObservation(action.tool!, result);
-  this.trajectory.log({ step, actionType: "toolCall", action, result });
-
-  if (result.success) {
-    this.planner.markStepDone(action.tool);       // ← advance planner
-  } else {
-    this.planner.markStepFailed(result.error!);   // ← trigger replan
-  }
-}
-```
-
-## Decompose once, replan on failure
+## What a production planner holds
 
 ```
-initial plan:  fetch account → fetch transactions → apply heuristics → flag or close
-                                        ↓
-              getTransactions fails (API timeout)
-                                        ↓
-              replan: retry getTransactions → apply heuristics with partial data → escalate
+TaskPlanner state for case 456:
+─────────────────────────────────
+task:     "Review account 456 for fraud"
+steps:
+  [0] fetch account details      → DONE   (getAccount)
+  [1] fetch transactions         → DONE   (getTransactions)
+  [2] apply fraud heuristics     → IN_PROGRESS
+  [3] flag or close with summary → PENDING
+scratchpad:
+  "balance $142.50, 2 settled txns, no unusual amounts"
+replans_remaining: 2
 ```
 
-## Scratchpad vs memory
+The scratchpad is working memory for the planner — not durable agent memory. It gets discarded when the case closes. Constraints and facts live in memcell-rl. The scratchpad is ephemeral reasoning.
 
+## Replanning when a tool fails
+
+If `getAccount` returns `account_not_found`, a good planner:
+
+1. Marks step 0 as `failed`
+2. Writes the error to scratchpad
+3. Either replans (try alternate ID) or escalates
+
+```python
+if not result.success:
+    planner.mark_failed(step, result.error)
+    if planner.replans_remaining > 0:
+        planner.replan()
+        return planner.next_action()
+    return Action(type=ActionType.ESCALATE, reason=result.error)
 ```
-Scratchpad:
-  - Planner's working notes during a task
-  - "balance $142.50, no unusual amounts"
-  - Lost when case closes — not durable
-  - Injected into context as a "soft hint"
-  - kind: "scratch" in MemoryStore, low criticality
 
-Memory:
-  - Durable across steps and cases
-  - Typed, queryable, auditable
-  - Survives replans and model swaps
+CaseBot's `--dry-run` planner doesn't replan yet — that's an exercise. But the loop already handles tool failure by escalating:
+
+```python
+if not result.success:
+    return f"ESCALATED:tool_error:{result.error}"
 ```
 
-**Companion:** `stateful-agent-lab/src/planner.ts`
+## LLM planner sketch
+
+When you swap in an LLM, the prompt includes plan state:
+
+```python
+SYSTEM = """You are a case-resolution agent.
+Current plan: {plan_json}
+Scratchpad: {scratchpad}
+Memory context: {memory_context}
+Return JSON: {{"type": "tool_call", "tool": "...", "args": {{}}}}
+           or {{"type": "answer", "text": "..."}}
+           or {{"type": "escalate", "reason": "..."}}"""
+```
+
+The LLM proposes. Python validates. The registry dispatches.
+
+## Exercise
+
+Modify `good_run_planner` to add a fourth step: write an episode cell to memcell-rl summarising the case outcome. Does the trajectory change? What property checks still pass?
 
 **Next →** [Stop Conditions and Escalation](./09-stop-escalate.md)

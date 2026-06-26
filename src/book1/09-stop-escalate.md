@@ -1,195 +1,106 @@
 # 8. Stop Conditions and Escalation
 
-## Stop is not an error
+An agent that never stops is not an agent — it's an infinite loop burning tokens. Stop conditions are the explicit rules that tell the loop when to exit. In regulated workflows, they are also compliance features.
 
-In regulated workflows, a correct `ESCALATE` beats a wrong `ANSWER`. Escalation is a first-class outcome, not a fallback.
+## Where the loop can exit
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Terminal states                                             │
-│                                                              │
-│  ANSWER     → task completed by the agent                   │
-│  ESCALATE   → agent correctly defers to human               │
-│  FAIL       → unrecoverable error (max steps, crash)        │
-└──────────────────────────────────────────────────────────────┘
-```
-
-## Stop conditions
-
-```typescript
-// src/stop_conditions.ts
-import type { Trajectory } from "./trajectory.js";
-import type { MemoryStore } from "./memory.js";
-import type { Action } from "./types.js";
-
-export interface StopCondition {
-  name: string;
-  check(params: {
-    step: number;
-    action: Action;
-    trajectory: Trajectory;
-    memory: MemoryStore;
-  }): { stop: boolean; reason?: string };
-}
-
-// ── 1. Max steps ──────────────────────────────────────────────────────────────
-
-export const maxStepsCondition = (max: number): StopCondition => ({
-  name: "max_steps",
-  check: ({ step }) => ({ stop: step >= max, reason: "max_steps_exceeded" }),
-});
-
-// ── 2. Duplicate tool call ────────────────────────────────────────────────────
-
-export const duplicateToolCondition: StopCondition = {
-  name: "duplicate_tool",
-  check: ({ action, trajectory }) => {
-    if (action.type !== "toolCall") return { stop: false };
-    const sig = JSON.stringify({ tool: action.tool, args: action.args });
-    const seen = trajectory.steps.some(
-      s => s.actionType === "toolCall" &&
-           JSON.stringify({ tool: s.action?.tool, args: s.action?.args }) === sig,
-    );
-    return { stop: seen, reason: "duplicate_tool_call" };
-  },
-};
-
-// ── 3. Constraint violation ───────────────────────────────────────────────────
-
-export const constraintViolationCondition: StopCondition = {
-  name: "constraint_violation",
-  check: ({ action, memory }) => {
-    if (action.type !== "toolCall") return { stop: false };
-
-    const constraints = memory.getConstraints();
-    for (const c of constraints) {
-      const content = typeof c.value === "string" ? c.value : JSON.stringify(c.value);
-
-      // Example: constraint says "no_outbound_transfers" and agent tries to transfer
-      if (content.includes("no_outbound_transfers") && action.tool === "initiateTransfer") {
-        return { stop: true, reason: "constraint_violation:no_outbound_transfers" };
-      }
-    }
-    return { stop: false };
-  },
-};
-
-// ── 4. Destructive action without approval ────────────────────────────────────
-
-export const destructiveWithoutApprovalCondition = (
-  registry: { schemas(): Array<{ name: string; isDestructive: boolean }> },
-  approvedTools: Set<string>,
-): StopCondition => ({
-  name: "destructive_without_approval",
-  check: ({ action }) => {
-    if (action.type !== "toolCall") return { stop: false };
-    const schema = registry.schemas().find(s => s.name === action.tool);
-    if (schema?.isDestructive && !approvedTools.has(action.tool!)) {
-      return { stop: true, reason: `destructive_action_requires_approval:${action.tool}` };
-    }
-    return { stop: false };
-  },
-});
+```mermaid
+flowchart TB
+  Start[loop step N] --> Check{stop condition?}
+  Check -->|duplicate call| Esc1[ESCALATE]
+  Check -->|max steps| Esc2[ESCALATE]
+  Check -->|tool error| Esc3[ESCALATE]
+  Check -->|answer| Done[DONE]
+  Check -->|escalate action| Esc4[ESCALATE]
+  Check -->|continue| Act[dispatch action]
 ```
 
-## Using stop conditions in the loop
+CaseBot implements four exits in `AgentLoop.run()`:
 
-```typescript
-// src/agent.ts (updated)
-export class AgentLoop {
-  constructor(
-    private task: string,
-    private memory: MemoryStore,
-    private planner: TaskPlanner,
-    private tools: ToolRegistry,
-    private trajectory: Trajectory,
-    private stopConditions: StopCondition[] = [],
-    private maxSteps = 10,
-  ) {}
+| Condition | Trigger | Outcome |
+|-----------|---------|---------|
+| Answer | Planner returns `answer` | Return text |
+| Duplicate tool call | Same `(tool, args)` seen before | `ESCALATED:duplicate_tool_call` |
+| Tool error | `ToolResult.success == False` | `ESCALATED:tool_error:...` |
+| Max steps | `step >= MAX_STEPS` | `ESCALATED:max_steps_exceeded` |
+| Explicit escalate | Planner returns `escalate` | `ESCALATED:{reason}` |
 
-  async run(): Promise<string> {
-    this.memory.writeTask(this.task);
+## Duplicate detection
 
-    for (let step = 0; step < this.maxSteps; step++) {
-      const action = await this.planner.next(this.memory.snapshot());
+```python
+sig = json.dumps({"tool": action.tool, "args": action.args}, sort_keys=True)
+if sig in self.seen_calls:
+    return f"ESCALATED:duplicate_tool_call at step {step}"
+self.seen_calls.add(sig)
+```
 
-      // Check all stop conditions before dispatching
-      for (const condition of this.stopConditions) {
-        const { stop, reason } = condition.check({
-          step, action, trajectory: this.trajectory, memory: this.memory,
-        });
-        if (stop) return this.escalate(reason ?? condition.name, step);
-      }
+I've seen agents call `getAccount("456")` six times because the LLM lost track of what it already did. Three lines fixes that.
 
-      if (action.type === "toolCall") {
-        const result = await this.tools.run(action.tool!, action.args ?? {});
-        this.memory.writeObservation(action.tool!, result);
-        this.trajectory.log({ step, actionType: "toolCall", action, result });
-        result.success
-          ? this.planner.markStepDone(action.tool)
-          : this.planner.markStepFailed(result.error!);
+## Permission as stop condition
 
-      } else if (action.type === "answer") {
-        this.trajectory.log({ step, actionType: "answer", action });
-        return action.text ?? "";
+The bad-run demo stops at step 1:
 
-      } else if (action.type === "escalate") {
-        return this.escalate(action.reason ?? "agent_request", step);
-      }
-    }
+```bash
+python examples/casebot_regulated.py --dry-run --bad-run
+# ESCALATED:tool_error:permission_denied: write:accounts required
+```
 
-    return this.escalate("max_steps_exceeded", this.maxSteps);
-  }
+You can also stop **before** dispatch — check permissions in the planner and return `escalate` instead of attempting the tool:
 
-  private escalate(reason: string, step: number): string {
-    this.trajectory.log({ step, actionType: "escalate", reason });
-    return `ESCALATED:${reason}`;
-  }
+```python
+if action.tool == "flagAccount" and "write:accounts" not in permissions:
+    return Action(type=ActionType.ESCALATE, reason="approval_required")
+```
+
+Prevention beats logging. Both beat silent failure.
+
+## Max steps by task type
+
+```python
+MAX_STEPS = {
+    "simple_lookup": 5,
+    "case_resolution": 12,
+    "multi_agent": 30,  # Book 3
 }
 ```
 
-## Escalation payload
+Case 456 uses 12. Open-ended chat would use a lower number or require explicit user input to continue.
 
-When escalating, give the human everything they need:
+## Escalation is a first-class outcome
 
-```typescript
-interface EscalationPayload {
-  caseId: string;
-  reason: string;
-  trajectoryId: string;
-  stepCount: number;
-  memorySnapshot: object;
-  proposedAction?: object;
-}
+`ESCALATED:` is not failure. It's the system working correctly — handing control to a human when the agent cannot proceed safely.
 
-function buildEscalationPayload(
-  caseId: string, reason: string,
-  trajectory: Trajectory, memory: MemoryStore,
-  pendingAction?: Action,
-): EscalationPayload {
-  return {
-    caseId,
-    reason,
-    trajectoryId: trajectory.id,
-    stepCount: trajectory.steps.length,
-    memorySnapshot: memory.snapshot(),
-    proposedAction: pendingAction,
-  };
-}
+In production:
+
+- Route `ESCALATED:approval_required` to supervisor queue
+- Route `ESCALATED:duplicate_tool_call` to engineering alert
+- Log all escalations to trajectory for audit
+
+```python
+if outcome.startswith("ESCALATED:"):
+    notify_supervisor(case_id="456", reason=outcome)
 ```
 
-## Decision table
+## Pluggable stop conditions
 
+For larger systems, extract checks into a list:
+
+```python
+STOP_CONDITIONS = [
+    max_steps_condition(12),
+    duplicate_tool_condition,
+    constraint_violation_condition,
+]
+
+for check in STOP_CONDITIONS:
+    if check.should_stop(step, action, trajectory):
+        return escalate(check.reason)
 ```
-Condition                          Action
-──────────────────────────────────────────────────────────
-step >= maxSteps                   ESCALATE max_steps_exceeded
-duplicate (tool, args)             ESCALATE duplicate_tool_call
-constraint violated                ESCALATE constraint_violation
-destructive without approval       ESCALATE approval_required
-tool returns permission_denied     ESCALATE (let planner decide)
-plan failed after maxReplans       ESCALATE replan_exhausted
-model returns escalate action      ESCALATE agent_request
-```
+
+CaseBot inlines the critical checks for clarity. Book 2 adds property checks that run **after** the loop — complementary, not redundant.
+
+## Exercise
+
+Add a stop condition: if `flagAccount` is called without a prior `getAccount` in the trajectory, escalate **before** dispatch — not just fail the property check after.
 
 **Next →** [Trajectory Logging](./10-trajectory.md)

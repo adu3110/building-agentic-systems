@@ -1,221 +1,185 @@
 # 2. The Minimal Agent Loop
 
+The agent loop is the heartbeat of every agentic system. It's embarrassingly simple on paper:
+
+**observe → decide → act → update → repeat**
+
+But the details matter enormously. This chapter builds the smallest loop that actually works for CaseBot — and shows the three ways it breaks in production.
+
 ## Architecture
 
-```
-                    ┌──────────────────────────────┐
-       task ──────► │           LOOP               │
-                    │                              │
-                    │  observe()                   │
-                    │      │                       │
-                    │      ▼                       │
-                    │  planner.next(memory)  ───── ┼──► LLM API
-                    │      │                       │
-                    │      ▼                       │
-                    │  dispatch(action)             │
-                    │   ├─ toolCall ───────────────┼──► external API
-                    │   ├─ answer  ────────────────┼──► return
-                    │   └─ escalate ───────────────┼──► human queue
-                    │      │                       │
-                    │      ▼                       │
-                    │  memory.update(result)        │
-                    │  trajectory.log(step)         │
-                    │      └──────── loop ──────── ┘
-                    └──────────────────────────────┘
+```mermaid
+flowchart TB
+  Task[task string] --> Loop
+  subgraph Loop [Agent loop]
+    direction TB
+    Obs[observe memory snapshot] --> Dec[planner.next]
+    Dec -->|toolCall| Tool[tools.run]
+    Dec -->|answer| Done[return text]
+    Dec -->|escalate| Esc[return ESCALATED]
+    Tool --> Upd[memory + trajectory update]
+    Upd --> Obs
+  end
+  Dec --> LLM[LLM API]
+  Tool --> API[External APIs]
 ```
 
-## Types
+Every iteration: read state, decide the next action, dispatch it, log it, loop.
 
-```typescript
-// src/types.ts
+## Action types
 
-export type ActionType = "toolCall" | "answer" | "escalate" | "think";
+An agent can only do a few things. Make them explicit:
 
-export interface Action {
-  type: ActionType;
-  tool?: string;
-  args?: Record<string, unknown>;
-  text?: string;
-  reason?: string;
-}
-
-export interface ToolResult {
-  success: boolean;
-  data?: unknown;
-  error?: string;
-}
-
-export interface TrajectoryStep {
-  step: number;
-  actionType: ActionType;
-  action?: Action;
-  result?: ToolResult;
-  reason?: string;
-  timestamp: string;
-}
+```python
+class ActionType(str, Enum):
+    TOOL_CALL = "tool_call"
+    ANSWER = "answer"
+    ESCALATE = "escalate"
 ```
+
+| Action | What happens |
+|--------|----------------|
+| `tool_call` | Validated against registry; result stored |
+| `answer` | Loop terminates; text returned |
+| `escalate` | Loop terminates; human queue notified |
+
+No free-form strings. No `eval()`. The LLM emits JSON; Python parses it into an `Action`.
 
 ## The loop
 
-```typescript
-// src/agent.ts
-import OpenAI from "openai";
-import type { Action, ActionType, ToolResult, TrajectoryStep } from "./types.js";
-import type { MemoryStore } from "./memory.js";
-import type { TaskPlanner } from "./planner.js";
-import type { ToolRegistry } from "./tools.js";
-import type { Trajectory } from "./trajectory.js";
+Here is the core of CaseBot — from `casebot_regulated.py`:
 
-export class AgentLoop {
-  private seenCalls = new Set<string>();
+```python
+class AgentLoop:
+    def __init__(self, task, tools, planner, memory_context=""):
+        self.task = task
+        self.tools = tools
+        self.planner = planner
+        self.seen_calls: set[str] = set()
+        self.trajectory = Trajectory(case_id="456", task=task)
 
-  constructor(
-    private task: string,
-    private memory: MemoryStore,
-    private planner: TaskPlanner,
-    private tools: ToolRegistry,
-    private trajectory: Trajectory,
-    private maxSteps = 10,
-  ) {}
+    def run(self) -> str:
+        for step in range(MAX_STEPS):
+            action = self.planner(step, self.trajectory, self.memory_context)
 
-  async run(): Promise<string> {
-    this.memory.writeTask(this.task);
+            if action.type == ActionType.TOOL_CALL:
+                sig = json.dumps({"tool": action.tool, "args": action.args}, sort_keys=True)
+                if sig in self.seen_calls:
+                    return f"ESCALATED:duplicate_tool_call at step {step}"
+                self.seen_calls.add(sig)
 
-    for (let step = 0; step < this.maxSteps; step++) {
-      const action = await this.planner.next(this.memory.snapshot());
+                result = self.tools.run(action.tool, action.args)
+                self.trajectory.log(step, action, result)
+                if not result.success:
+                    return f"ESCALATED:tool_error:{result.error}"
 
-      if (action.type === "toolCall") {
-        const sig = JSON.stringify({ tool: action.tool, args: action.args });
-        if (this.seenCalls.has(sig)) {
-          return this.escalate("duplicate_tool_call", step);
-        }
-        this.seenCalls.add(sig);
+            elif action.type == ActionType.ANSWER:
+                self.trajectory.log(step, action)
+                return action.text or ""
 
-        const result = await this.tools.run(action.tool!, action.args ?? {});
-        this.memory.writeObservation(action.tool!, result);
-        this.trajectory.log({ step, actionType: "toolCall", action, result });
+            elif action.type == ActionType.ESCALATE:
+                self.trajectory.log(step, action)
+                return f"ESCALATED:{action.reason}"
 
-      } else if (action.type === "answer") {
-        this.trajectory.log({ step, actionType: "answer", action });
-        return action.text ?? "";
-
-      } else if (action.type === "escalate") {
-        return this.escalate(action.reason ?? "agent_request", step);
-
-      } else if (action.type === "think") {
-        this.trajectory.log({ step, actionType: "think", action });
-      }
-    }
-
-    return this.escalate("max_steps_exceeded", this.maxSteps);
-  }
-
-  private escalate(reason: string, step: number): string {
-    this.trajectory.log({ step, actionType: "escalate", reason });
-    return `ESCALATED:${reason}`;
-  }
-}
+        return "ESCALATED:max_steps_exceeded"
 ```
 
-## Minimal planner (direct LLM call)
+Notice what the loop **does not** do: it does not call the LLM directly. The `planner` decides the next action. In `--dry-run` mode, the planner is a scripted sequence — so you can test the loop without an API key. In `--live` mode, the planner wraps an LLM call. Same loop. Different planner.
 
-```typescript
-// src/planner_simple.ts
-import OpenAI from "openai";
-import type { Action } from "./types.js";
+That's the separation I care about.
 
-const client = new OpenAI();
+## A compliant run
 
-const SYSTEM = `You are a case-resolution agent.
-Given the current memory state and task, decide your next action.
-Reply with JSON only — one of:
-  { "type": "toolCall", "tool": "<name>", "args": { ... } }
-  { "type": "answer",   "text": "<final answer>" }
-  { "type": "escalate", "reason": "<why>" }
-Available tools: getAccount, getTransactions, flagAccount`;
+Case 456: review for fraud. The good planner executes three steps:
 
-export async function nextAction(memorySnapshot: object): Promise<Action> {
-  const resp = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM },
-      { role: "user",   content: JSON.stringify(memorySnapshot) },
-    ],
-  });
+```mermaid
+sequenceDiagram
+  participant L as AgentLoop
+  participant T as ToolRegistry
+  participant Tr as Trajectory
 
-  const raw = JSON.parse(resp.choices[0].message.content ?? "{}");
-  return raw as Action;
-}
+  L->>T: getAccount(456)
+  T-->>L: balance $142.50, fraud_review=true
+  L->>Tr: log step 0
+
+  L->>T: getTransactions(456)
+  T-->>L: 2 settled transactions
+  L->>Tr: log step 1
+
+  L->>L: answer "No fraud indicators. Case closed."
+  L->>Tr: log step 2
 ```
 
-## Step types
-
-```
-┌────────────┬──────────────────────────────────────────────────────┐
-│ ActionType │ What happens                                         │
-├────────────┼──────────────────────────────────────────────────────┤
-│ think      │ logged, not dispatched — internal scratchpad         │
-│ toolCall   │ validated against registry, result stored in memory  │
-│ answer     │ loop terminates, text returned to caller             │
-│ escalate   │ loop terminates, human queue notified                │
-└────────────┴──────────────────────────────────────────────────────┘
+```bash
+python examples/casebot_regulated.py --dry-run
 ```
 
-## Failure modes
-
-### Duplicate tool calls
-
-```typescript
-// Without duplicate detection:
-// step 0: getAccount("456") → ok
-// step 1: getAccount("456") → ok  (LLM confused)
-// step 2: getAccount("456") → ok  (3 identical calls, burning tokens)
-
-// Fix: track call signatures
-const sig = JSON.stringify({ tool: action.tool, args: action.args });
-if (this.seenCalls.has(sig)) return this.escalate("duplicate_tool_call", step);
-this.seenCalls.add(sig);
+```
+Outcome: Account 456 reviewed. Balance $142.50. Two settled transactions. No fraud indicators. Case closed.
+Tools:   ['getAccount', 'getTransactions']
+Steps:   3
+  PASS  lookup_before_flag
+  PASS  bounded_steps
 ```
 
-### Silent context overflow
+## Failure mode 1: duplicate tool calls
+
+Without duplicate detection:
 
 ```
-step  1:  user message          ~  50 tokens
-step 10:  10 observations       ~ 800 tokens
-step 20:  20 observations       ~2000 tokens  ← quality drops
-step 40:  40 observations       ~4000 tokens  ← old constraints invisible
-step 80:  80 observations       ~8000 tokens  ← model limit, crash
+step 0: getAccount("456") → ok
+step 1: getAccount("456") → ok   ← LLM confused
+step 2: getAccount("456") → ok   ← burning tokens, no progress
 ```
 
-The loop above passes a **bounded snapshot** to the planner — never the raw growing array. Chapter 5 handles what goes into that snapshot.
+The fix is three lines: hash the `(tool, args)` pair, check the set, escalate on repeat. You saw this in the loop above.
 
-### No termination
+## Failure mode 2: silent context overflow
 
-Always set `maxSteps`. Sensible defaults:
+If you pass the entire growing transcript to the planner every turn:
 
-```typescript
-const MAX_STEPS: Record<string, number> = {
-  simpleLookup:      5,
-  caseResolution:   12,
-  multiAgent:       30,   // Book 3
-};
 ```
+step  1:  user message           ~  50 tokens
+step 10:  10 observations        ~ 800 tokens
+step 20:  20 observations        ~2000 tokens  ← quality drops
+step 40:  40 observations        ~4000 tokens  ← old constraints invisible
+```
+
+The loop must pass a **bounded snapshot** to the planner — never the raw growing array. Chapter 5 handles what goes into that snapshot. Chapter 3 handles what gets stored.
+
+## Failure mode 3: no termination
+
+Always set `max_steps`. Always handle escalate. A loop without a ceiling will run until your API budget runs out.
+
+```python
+MAX_STEPS = 12  # case resolution, not open-ended chat
+```
+
+## Why I start with a scripted planner
+
+When I build a new agent system, I don't start with an LLM. I start with a hard-coded planner that returns a fixed sequence of actions. If the loop, tools, and trajectory logging don't work with a script, they won't work with an LLM either.
+
+```python
+def good_run_planner(step, traj, memory):
+    script = [
+        Action(type=ActionType.TOOL_CALL, tool="getAccount", args={"accountId": "456"}),
+        Action(type=ActionType.TOOL_CALL, tool="getTransactions", args={"accountId": "456"}),
+        Action(type=ActionType.ANSWER, text="Account 456 reviewed. Case closed."),
+    ]
+    return script[step]
+```
+
+Once this passes property checks, swap in an LLM planner. The loop doesn't change.
 
 ## Exercise
 
-Implement the loop stub with no LLM and no real tools. Hard-code `planner.next()` to return:
+Run the bad path and read the trajectory file:
 
-```typescript
-const steps: Action[] = [
-  { type: "toolCall", tool: "getAccount",      args: { accountId: "456" } },
-  { type: "toolCall", tool: "getTransactions", args: { accountId: "456" } },
-  { type: "answer",   text: "Account 456 active, 2 settled transactions." },
-];
+```bash
+python examples/casebot_regulated.py --dry-run --bad-run
+cat logs/case456.json | python -m json.tool
 ```
 
-Verify the loop terminates and `trajectory.steps.length === 3`.
-
-**Companion:** `stateful-agent-lab/src/agent.ts`
+Why does `lookup_before_flag` fail? What would you add to stop the agent before the tool call, not after?
 
 **Next →** [State: Chat History Is Not Memory](./04-state.md)

@@ -1,223 +1,156 @@
 # 4. Typed Memory Objects
 
-## Adding scope, sensitivity, and cell type
+Chapter 3 introduced memory cells. This chapter goes deeper into the fields that matter in production — especially in regulated workflows where **scope**, **sensitivity**, and **lifecycle** are not optional.
 
-Chapter 3's `MemoryEntry` works for one agent on one case. Production adds three fields that become critical at scale: **scope** (which case / user owns this), **sensitivity** (who can read it), and stricter **cellType** semantics.
+## The cell schema
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  MemoryStateCell                                               │
-│                                                                │
-│  id            string (UUID)                                   │
-│  cellType      "constraint" | "fact" | "preference" | "episode"│
-│  scope         "case:456" | "user:789" | "global"              │
-│  content       string | Record<string, unknown>                │
-│  status        "active" | "superseded" | "quarantined"         │
-│  sensitivity   "public" | "internal" | "pii" | "restricted"    │
-│  criticality   0.0–1.0  retention priority under token budget  │
-│  createdAt     ISO timestamp                                    │
-│  expiresAt?    optional TTL                                     │
-│  source        "user" | "tool:X" | "policy:Y"                  │
-└────────────────────────────────────────────────────────────────┘
+Every cell in memcell-rl is a `MemoryStateCell`:
+
+```mermaid
+flowchart LR
+  subgraph cell [MemoryStateCell]
+    id[cell_id UUID]
+    type[type: constraint fact preference episode]
+    scope[scope: case user global]
+    content[content]
+    sens[sensitivity: low restricted]
+    crit[criticality 0.0–1.0]
+    status[status: active superseded]
+  end
 ```
 
-## Full implementation
+From the actual schema in memcell-rl:
 
-```typescript
-// src/memory_cell.ts
-import { randomUUID } from "crypto";
-
-export type CellType    = "constraint" | "fact" | "preference" | "episode";
-export type CellStatus  = "active" | "superseded" | "quarantined" | "expired";
-export type Sensitivity = "public" | "internal" | "pii" | "restricted";
-
-const SENSITIVITY_ORDER: Sensitivity[] = ["public", "internal", "pii", "restricted"];
-
-export interface MemoryStateCell {
-  id:          string;
-  cellType:    CellType;
-  scope:       string;
-  content:     string | Record<string, unknown>;
-  source:      string;
-  sensitivity: Sensitivity;
-  criticality: number;
-  status:      CellStatus;
-  createdAt:   string;
-  expiresAt?:  string;
-}
-
-function makeCell(params: Omit<MemoryStateCell, "id" | "status" | "createdAt">): MemoryStateCell {
-  return { id: randomUUID(), status: "active", createdAt: new Date().toISOString(), ...params };
-}
-
-export class CellStore {
-  private cells: MemoryStateCell[] = [];
-
-  // ── Write ────────────────────────────────────────────────────────────────
-
-  write(cell: MemoryStateCell): MemoryStateCell {
-    this.cells.push(cell);
-    return cell;
-  }
-
-  constraint(scope: string, content: string, source = "policy", criticality = 1.0) {
-    return this.write(makeCell({ cellType: "constraint", scope, content, source,
-      sensitivity: "internal", criticality }));
-  }
-
-  fact(scope: string, content: Record<string, unknown>, source = "tool", sensitivity: Sensitivity = "internal") {
-    return this.write(makeCell({ cellType: "fact", scope, content, source,
-      sensitivity, criticality: 0.6 }));
-  }
-
-  // ── Lifecycle ────────────────────────────────────────────────────────────
-
-  supersede(cellId: string, newContent: unknown, source: string): MemoryStateCell {
-    const old = this.byId(cellId);
-    if (old) old.status = "superseded";
-    return this.write(makeCell({
-      cellType: old?.cellType ?? "fact",
-      scope: old?.scope ?? "global",
-      content: newContent as string,
-      source,
-      sensitivity: old?.sensitivity ?? "internal",
-      criticality: old?.criticality ?? 0.5,
-    }));
-  }
-
-  quarantine(cellId: string): void {
-    const cell = this.byId(cellId);
-    if (cell) cell.status = "quarantined";
-  }
-
-  expireByScope(scope: string): number {
-    let count = 0;
-    for (const c of this.cells) {
-      if (c.scope === scope && c.status === "active") { c.status = "expired"; count++; }
-    }
-    return count;
-  }
-
-  // ── Query ────────────────────────────────────────────────────────────────
-
-  active(params: {
-    scope?: string;
-    cellType?: CellType;
-    maxSensitivity?: Sensitivity;
-  } = {}): MemoryStateCell[] {
-    return this.cells.filter(c => {
-      if (c.status !== "active") return false;
-      if (params.scope && c.scope !== params.scope && c.scope !== "global") return false;
-      if (params.cellType && c.cellType !== params.cellType) return false;
-      if (params.maxSensitivity) {
-        const allowed = SENSITIVITY_ORDER.indexOf(params.maxSensitivity);
-        if (SENSITIVITY_ORDER.indexOf(c.sensitivity) > allowed) return false;
-      }
-      return true;
-    });
-  }
-
-  constraints(scope: string): MemoryStateCell[] {
-    return this.active({ scope, cellType: "constraint" });
-  }
-
-  private byId(id: string): MemoryStateCell | undefined {
-    return this.cells.find(c => c.id === id);
-  }
-}
+```python
+class WriteCellRequest(BaseModel):
+    type: CellType                    # constraint | fact | preference | episode
+    scope: dict[str, Any]             # {"case": "456"}
+    content: str
+    confidence: float = 1.0
+    sensitivity: Sensitivity          # low | medium | high | restricted
+    source_refs: list[str]            # ["policy:fraud_engine"]
+    policy_features: PolicyFeatures   # criticality, staleness, etc.
 ```
+
+The fields I care most about:
+
+| Field | Why it matters |
+|-------|----------------|
+| `scope` | Prevents cross-case leakage |
+| `sensitivity` | Controls who can read the cell |
+| `policy_features.criticality` | Determines survival under token pressure |
+| `status` | Enables audit without deletion |
 
 ## Scoping: the most-missed feature
 
-Every cell has a `scope`. Mixing scopes causes cross-case leakage — one of the most common production bugs.
+Every cell has a scope. Case 456 and case 457 must not share constraints.
 
-```typescript
-// Case 456 opens
-store.constraint("case:456", "fraud_review_active");
+```python
+# Case 456
+write(type="constraint", scope={"case": "456"}, content="fraud_review_active")
 
-// Case 457 opens (different customer)
-store.constraint("case:457", "fee_waiver_allowed");
-
-// Agent answering case 457 must query only case 457
-const wrong = store.active();                           // ← gets both cases
-const right  = store.active({ scope: "case:457" });    // ← only 457 + global
+# Case 457 — different customer
+write(type="constraint", scope={"case": "457"}, content="fee_waiver_allowed")
 ```
 
-**Never call `store.active()` without a scope in production.**
+**Never query memory without a scope in production.**
+
+```python
+# Wrong — returns cells from all cases
+cells = list_all_active()
+
+# Right — case 457 agent sees only 457 + global
+decide(query=task, scope={"case": "457"})
+```
+
+Cross-case leakage is one of the most common production bugs I see. An agent working on case 457 accidentally reads case 456's fraud flag and blocks a legitimate transaction.
 
 ## Sensitivity gating
 
-An `InvestigatorAgent` cannot see PII:
+Not every agent should see every cell. An investigator agent may read `internal` data. A summary bot may not read `restricted` PII.
 
-```typescript
-// InvestigatorAgent: public + internal only
-const investigatorView = store.active({
-  scope: "case:456",
-  maxSensitivity: "internal",   // pii and restricted excluded
-});
-
-// AuditorAgent: full access
-const auditView = store.active({
-  scope: "case:456",
-  maxSensitivity: "restricted",
-});
+```python
+write(
+    type="fact",
+    scope={"case": "456"},
+    content="Customer SSN on file: ***-**-1234",
+    sensitivity="restricted",
+)
 ```
 
-## CaseBot: a complete write sequence
+memcell-rl's `decide()` respects scope and policy. Your application layer can further filter by agent role.
 
-```typescript
-const store = new CellStore();
+## CaseBot: complete write sequence
 
-// 1. Policy fires at case open
-store.constraint(
-  "case:456",
-  "account_under_fraud_review:no_outbound_transfers",
-  "policy:fraud_engine",
-  1.0,
-);
+When case 456 opens:
 
-// 2. Tool returns account data
-const accountResult = await tools.run("getAccount", { accountId: "456" });
-const factCell = store.fact(
-  "case:456",
-  { accountId: "456", ...accountResult.data as object },
-  "tool:getAccount",
-  "internal",
-);
+```mermaid
+sequenceDiagram
+  participant CB as CaseBot
+  participant M as memcell-rl
+  participant T as Tools
 
-// 3. Balance changes mid-case → supersede, never delete
-const updated = await tools.run("getAccount", { accountId: "456" });
-store.supersede(factCell.id, updated.data, "tool:getAccount");
-
-// 4. Verify
-console.log(store.constraints("case:456").length);   // 1, still active
-console.log(store.active({ scope: "case:456", cellType: "fact" }).length); // 1 (new)
-// Old fact still in cells array with status: "superseded" — audit trail preserved
+  CB->>M: write constraint (fraud_review)
+  CB->>T: getAccount(456)
+  T-->>CB: account data
+  CB->>M: write fact (balance, status)
+  Note over CB,M: balance changes later
+  CB->>T: getAccount(456)
+  CB->>M: supersede fact cell
 ```
 
-## memcell-rl: the HTTP API version
+```python
+# 1. Policy fires at case open
+memcell_post("/v1/cells/write", {
+    "type": "constraint",
+    "scope": {"case": "456"},
+    "content": "account_456_under_fraud_review: no_outbound_transfers",
+    "source_refs": ["policy:fraud_engine"],
+    "policy_features": {"criticality": 0.95, ...},
+})
 
-The same architecture as an HTTP microservice. The agent calls it over localhost; state survives process restarts.
+# 2. Tool returns account data → write fact
+result = registry.run("getAccount", {"accountId": "456"})
+memcell_post("/v1/cells/write", {
+    "type": "fact",
+    "scope": {"case": "456"},
+    "content": json.dumps(result.data),
+    "source_refs": ["tool:getAccount"],
+    "policy_features": {"criticality": 0.6, ...},
+})
+
+# 3. Balance changes → supersede, never delete
+memcell_post("/v1/cells/supersede", {
+    "old_cell_id": fact_cell_id,
+    "new_content": json.dumps(updated_balance),
+})
+```
+
+The old fact remains in the database with `status: superseded`. Auditors can reconstruct what the agent knew at each step.
+
+## memcell-rl vs in-process memory
+
+For Book 1, CaseBot calls memcell-rl over HTTP. That separation matters:
+
+- Memory survives agent process restarts
+- Multiple agents can share scoped cells (Book 3)
+- Every `decide()` creates an RL-ready transition (Book 2)
+- Memory policy is testable independently of the loop
 
 ```bash
-# Start the server
+# Start the memory service
 uvicorn memcell_rl.app:app --port 8000
 
 # Write a constraint
-curl -s -X POST http://localhost:8000/v1/cells/write \
+curl -X POST http://localhost:8000/v1/cells/write \
   -H "Content-Type: application/json" \
-  -d '{
-    "cell_type": "constraint",
-    "scope": "case:456",
-    "content": "no_outbound_transfers",
-    "source": "policy",
-    "criticality": 1.0
-  }'
-
-# Fetch active cells for the case
-curl "http://localhost:8000/v1/cells/list?scope=case:456&cell_type=constraint"
+  -d '{"type":"constraint","scope":{"case":"456"},"content":"no_outbound_transfers","policy_features":{"criticality":0.95}}'
 ```
 
-**Companion:** [memcell-rl](https://github.com/adu3110/memcell-rl)
+## Exercise
+
+Write two facts for case 456 with different criticality scores (0.9 and 0.3). Call `decide()` with a small `budget_tokens`. Which fact gets selected? What does that tell you about how context assembly will behave in the next chapter?
+
+**Companion:** [`memcell-rl/memcell_rl/models/schemas.py`](https://github.com/adu3110/memcell-rl/blob/main/memcell_rl/models/schemas.py)
 
 **Next →** [Context Assembly Under a Token Budget](./06-context-assembly.md)

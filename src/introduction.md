@@ -1,36 +1,62 @@
 # Building Agentic Systems
 
-A framework-free guide to building agentic systems from first principles — loop, memory, tools, planning, evaluation, and coordination. No LangChain. No magic in the middle.
+I want to show you how to build an agentic system from scratch — not by wrapping an LLM in a framework, but by owning every layer: the loop, the memory, the tools, the stop conditions, and the audit log.
+
+This book follows **one running example** all the way through: **CaseBot**, a regulated case-resolution agent that reviews customer account 456 for fraud indicators. Every chapter adds one layer to the same case. Every code block comes from code you can run.
+
+**Companion code:** [`memcell-rl/examples/casebot_regulated.py`](https://github.com/adu3110/memcell-rl/blob/main/examples/casebot_regulated.py)
+
+```bash
+cd memcell-rl
+uvicorn memcell_rl.app:app --port 8000   # terminal 1
+python examples/casebot_regulated.py --dry-run   # terminal 2
+```
 
 ---
 
 ## About This Series
 
-Most tutorials show you how to wrap an LLM in LangChain and call it an agent. That hides the hard parts: **state**, **memory**, **tool reliability**, **planning**, **evaluation**, and **coordination**.
+Most agent tutorials optimize for a demo in twenty lines. That hides the hard parts: **state**, **memory**, **tool reliability**, **planning**, **evaluation**, and **coordination**.
 
-This series builds each layer from scratch — TypeScript, HTTP, JSON, SQLite — and treats the LLM as a replaceable component, not the architecture. The ideas come from building open-source repos, running regulated agent workflows, and debugging what breaks in production.
+When something breaks in production — an agent waives a fee without approval, loops the same tool call six times, or "forgets" a constraint from turn two — you cannot fix it by tuning the prompt. You need to own the layer that failed.
 
-## The Running Example
+This series builds each layer explicitly. The LLM is a replaceable HTTP component. The architecture is TypeScript-free Python you can read, run, and audit.
 
-Throughout all three books we build one system: a **regulated case-resolution agent** that handles customer accounts in a financially regulated workflow. Not a coding assistant. Not a chatbot. A system that must remember constraints, call tools safely, log every step, and survive audit.
+## The Running Example: Case 456
 
-Companion repos:
+Throughout Book 1 we build CaseBot:
 
-| Repo | Layer |
-|------|-------|
-| [stateful-agent-lab](https://github.com/adu3110/stateful-agent-lab) | Loop, memory, planning, trajectory |
-| [long-context-bench](https://github.com/adu3110/long-context-bench) | Context and memory benchmarks |
-| [llm-evals-from-scratch](https://github.com/adu3110/llm-evals-from-scratch) | Trajectory and retrieval evaluation |
-| [memcell-rl](https://github.com/adu3110/memcell-rl) | Memory policy and RL transitions |
-| [agent-ledger](https://github.com/adu3110/agent-ledger) | Multi-agent coordination |
+| Step | What happens |
+|------|----------------|
+| Case opens | Fraud-review constraint loaded for account 456 |
+| Lookup | `getAccount` → balance, status |
+| History | `getTransactions` → settled transactions |
+| Decision | Close case or flag for review |
+| Audit | Full trajectory exported to JSON |
+
+Not a coding assistant. Not a chatbot. A system that must remember constraints, call tools safely, log every step, and survive compliance review.
+
+```mermaid
+flowchart LR
+  Task[Case 456 task] --> Loop[Agent loop]
+  Loop --> Memory[memcell-rl memory]
+  Loop --> Tools[Tool registry]
+  Loop --> Traj[Trajectory log]
+  Traj --> Eval[Property checks]
+```
 
 ## The Three Books
 
-**Book 1 — Building an Agentic System** covers the foundation: one agent, one loop, typed memory, tools, planning, stop conditions, and trajectory logging. Repo: [stateful-agent-lab](https://github.com/adu3110/stateful-agent-lab).
+**Book 1 — Building an Agentic System** *(this book)*  
+One agent, one loop, typed memory, tools, planning, stop conditions, trajectory logging. Runnable: `casebot_regulated.py`.
 
-**Book 2 — Making Agentic Systems Reliable** covers measurement: why final-answer accuracy lies, trajectory property checks, long-context failure modes, memory policies, and RL-ready transition logging. Repos: [long-context-bench](https://github.com/adu3110/long-context-bench) · [llm-evals-from-scratch](https://github.com/adu3110/llm-evals-from-scratch) · [memcell-rl](https://github.com/adu3110/memcell-rl).
+**Book 2 — Making Agentic Systems Reliable** *(draft)*  
+Why final-answer accuracy lies, trajectory properties, failure diagnosis, memory policies, benchmarks. Repos: [`llm-evals-from-scratch`](https://github.com/adu3110/llm-evals-from-scratch), [`long-context-bench`](https://github.com/adu3110/long-context-bench).
 
-**Book 3 — Scaling and Coordinating Agentic Systems** covers multiple agents: append-only coordination logs, conflict detection, replay, permissions, human-in-the-loop, and regulated deployment. Repo: [agent-ledger](https://github.com/adu3110/agent-ledger).
+**Book 3 — Scaling and Coordinating Agentic Systems** *(draft)*  
+Multi-agent coordination, append-only ledgers, conflict detection, human-in-the-loop, regulated deployment. Repo: [`agent-ledger`](https://github.com/adu3110/agent-ledger).
+
+Book 1 is complete and runnable. Books 2 and 3 are outlined; they extend the same CaseBot story once the foundation is solid.
 
 ## Who This Is For
 
@@ -41,25 +67,19 @@ Companion repos:
 
 ## Prerequisites
 
-- TypeScript / Node.js basics
-- Basic LLM API usage (OpenAI-compatible endpoints)
-- No agent framework experience required — we build the layers
+- Python 3.11+
+- Basic LLM API usage (optional for Book 1 — `--dry-run` works without an API key)
+- No agent framework experience required
 
 ## What You Will Not Find Here
 
 - LangChain / CrewAI / AutoGen tutorials disguised as architecture
 - Prompt-engineering-only advice with no systems design
-- Coding-agent UI patterns (terminals, file trees, diff views)
+- Code that was never run
 
 ## About the Author
 
-Hi — I'm **Aditi Chatterji**. I build AI systems from first principles: small transformers, evaluation harnesses, memory architectures, and agent workflows.
-
-Most of my work lives on [GitHub](https://github.com/adu3110). I apply these ideas through [Kyne AI](https://www.kynelabs.ai/) (agent OS for regulated workflows) and [Squirrels Tech](https://www.squirrelstech.org/) (AI education from first principles).
-
-Background: Master's from IISc, CS at UPenn, Stanford LEAD. Earlier work in credit risk, stress testing, and applied ML at HSBC, Wizely, and KPMG — three filed patents, 75% scorecard cost reduction.
-
-[GitHub](https://github.com/adu3110) · [Contact](https://www.linkedin.com/in/aditi-chatterji-69082b75/)
+I'm **Aditi Chatterji**. I build AI systems from first principles — small transformers, evaluation harnesses, memory architectures, agent workflows. Most of my work is on [GitHub](https://github.com/adu3110). I apply these ideas through [Kyne AI](https://www.kynelabs.ai/) (agent OS for regulated workflows) and [Squirrels Tech](https://www.squirrelstech.org/) (AI education from first principles).
 
 ---
 

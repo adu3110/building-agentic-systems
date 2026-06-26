@@ -1,232 +1,157 @@
 # 3. State: Chat History Is Not Memory
 
-## The confusion
+This is the most common mistake I see in agent systems: treating the chat transcript as memory. It's not. Let me show you why — and what to use instead.
+
+## Three different things
 
 ```
 chat history  ≠  context window  ≠  memory
 ```
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  CHAT HISTORY                                                    │
-│  Ordered array of messages. Grows every turn.                    │
-│  { role: "user" | "assistant", content: string }[]               │
-├──────────────────────────────────────────────────────────────────┤
-│  CONTEXT WINDOW                                                  │
-│  Subset sent to the LLM this turn. Budget-limited (~8k tokens).  │
-│  Chapter 5 controls selection.                                   │
-├──────────────────────────────────────────────────────────────────┤
-│  MEMORY / STATE                                                  │
-│  Structured program state the agent explicitly maintains.        │
-│  Typed. Queryable. Durable. Does not grow unbounded.             │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-## Why chat history fails as memory
-
-```
-turn  1:  "Account 456 is under fraud review. No outbound transfers."
-turn  2:  getAccount("456") → { balance: 142.50, status: "active" }
-...
-turn 28:  agent initiates outbound transfer of $500
-          ← turn 1's constraint is now 4000 tokens back
-          ← recent observations dominated attention
-          ← constraint violated
+```mermaid
+flowchart TB
+  subgraph CH [Chat history]
+    M1[message 1] --> M2[message 2] --> M3[...] --> MN[message N]
+  end
+  subgraph CW [Context window]
+    SUB[Subset sent to LLM this turn — budget limited]
+  end
+  subgraph MEM [Memory / state]
+    C[constraints] 
+    F[facts]
+    O[observations]
+  end
+  CH -.->|select under budget| CW
+  MEM -->|assemble| CW
 ```
 
-This is not a prompt engineering problem. It is a **memory architecture problem**. The constraint was never stored as a durable, typed object — it was a message that got buried.
+| Concept | What it is | Grows? |
+|---------|-----------|--------|
+| Chat history | Ordered messages | Yes, unbounded |
+| Context window | What the LLM sees this turn | Fixed budget |
+| Memory | Typed state the agent maintains | Controlled |
 
-## The fix: explicit typed state store
+Chapter 5 controls context assembly. This chapter is about memory.
 
-```typescript
-// src/memory.ts
+## Why chat history fails
 
-export type MemoryKind = "constraint" | "fact" | "observation" | "plan" | "scratch";
-export type MemoryStatus = "active" | "superseded" | "quarantined" | "expired";
+Case 456 opens. Turn 1:
 
-export interface MemoryEntry {
-  id: string;
-  key: string;
-  value: unknown;
-  kind: MemoryKind;
-  source: string;          // "user" | "tool:getAccount" | "policy"
-  criticality: number;     // 0.0–1.0; 1.0 = always injected
-  createdAt: string;
-  expiresAt?: string;
-  status: MemoryStatus;
-}
+> "Account 456 is under fraud review. No outbound transfers."
 
-export interface MemorySnapshot {
-  task: unknown;
-  constraints: MemoryEntry[];
-  facts: MemoryEntry[];
-  plan: MemoryEntry[];
-  recentObservations: MemoryEntry[];
-}
+Turn 28: the agent initiates an outbound transfer.
 
-export class MemoryStore {
-  private entries: MemoryEntry[] = [];
-  private seq = 0;
+What happened? Turn 1's constraint is now four thousand tokens back. Recent tool outputs dominate attention. The constraint was never stored as a durable object — it was a message that got buried.
 
-  write(params: {
-    key: string;
-    value: unknown;
-    kind: MemoryKind;
-    source: string;
-    criticality?: number;
-    expiresAt?: string;
-  }): MemoryEntry {
-    const entry: MemoryEntry = {
-      id: `mem_${++this.seq}`,
-      status: "active",
-      criticality: 0.5,
-      createdAt: new Date().toISOString(),
-      ...params,
-    };
-    this.entries.push(entry);
-    return entry;
-  }
+This is not a prompt engineering problem. **It is a memory architecture problem.**
 
-  writeTask(task: string): void {
-    this.write({ key: "currentTask", value: task, kind: "plan", source: "user", criticality: 1.0 });
-  }
+```mermaid
+sequenceDiagram
+  participant U as User/policy
+  participant Chat as Chat history
+  participant Agent as Agent
 
-  writeObservation(tool: string, result: unknown): void {
-    this.write({
-      key: `obs_${tool}_${this.seq}`,
-      value: result,
-      kind: "observation",
-      source: `tool:${tool}`,
-      criticality: 0.4,
-    });
-  }
-
-  supersede(key: string, newValue: unknown, source: string): void {
-    // Mark old entries superseded — keep for audit
-    for (const e of this.entries) {
-      if (e.key === key && e.status === "active") e.status = "superseded";
-    }
-    this.write({ key, value: newValue, kind: "fact", source, criticality: 0.6 });
-  }
-
-  quarantine(key: string): void {
-    for (const e of this.entries) {
-      if (e.key === key && e.status === "active") e.status = "quarantined";
-    }
-  }
-
-  getActive(kind?: MemoryKind): MemoryEntry[] {
-    return this.entries.filter(
-      e => e.status === "active" && (kind == null || e.kind === kind),
-    );
-  }
-
-  getConstraints(): MemoryEntry[] {
-    return this.getActive("constraint");
-  }
-
-  snapshot(): MemorySnapshot {
-    const obs = this.getActive("observation");
-    return {
-      task: this.getValue("currentTask"),
-      constraints: this.getActive("constraint"),
-      facts: this.getActive("fact"),
-      plan: this.getActive("plan"),
-      recentObservations: obs.slice(-3),
-    };
-  }
-
-  private getValue(key: string): unknown {
-    return [...this.entries].reverse().find(e => e.key === key && e.status === "active")?.value;
-  }
-}
+  U->>Chat: "No outbound transfers" (turn 1)
+  Note over Chat: 27 more turns of tool output
+  Agent->>Chat: reads recent messages only
+  Note over Agent: constraint invisible
+  Agent->>Agent: violates policy
 ```
 
-## Writing a constraint that survives 40 turns
+## The fix: typed memory cells
 
-```typescript
-const memory = new MemoryStore();
+In CaseBot, memory is stored in **memcell-rl** — an HTTP service that holds typed, scoped cells. Each cell has:
 
-// Turn 1: user establishes constraint
-memory.write({
-  key: "fraudReview456",
-  value: { accountId: "456", restriction: "no_outbound_transfers" },
-  kind: "constraint",
-  source: "user",
-  criticality: 1.0,   // ← always injected, even under token pressure
-});
+- `type`: constraint, fact, preference, episode
+- `scope`: e.g. `{"case": "456"}`
+- `content`: the actual data
+- `policy_features.criticality`: retention priority under token pressure
 
-// ... 40 turns of tool calls and observations ...
+When case 456 opens, we write the fraud-review constraint:
 
-// Turn 41: context assembler still sees this
-const snapshot = memory.snapshot();
-console.log(snapshot.constraints.length); // 1 — still there
-console.log(snapshot.constraints[0].status); // "active"
+```python
+memcell_post("/v1/cells/write", {
+    "type": "constraint",
+    "scope": {"case": "456"},
+    "content": "account_456_under_fraud_review: no_outbound_transfers until review closes",
+    "confidence": 0.99,
+    "sensitivity": "restricted",
+    "source_refs": ["policy:fraud_engine"],
+    "policy_features": {
+        "criticality": 0.95,
+        "compressibility": 0.05,
+        "staleness": 0.0,
+        "future_utility_estimate": 0.95,
+    },
+})
 ```
+
+Forty turns later, `decide()` still selects this cell. The constraint didn't disappear — because it was never a chat message.
 
 ## Memory lifecycle
 
-```
-write()
-  │
-  ├── active ──── supersede(key, newValue) ──► superseded  (kept for audit)
-  │
-  ├── active ──── quarantine(key) ──────────► quarantined  (conflict, needs resolution)
-  │
-  └── active ──── expiresAt reached ────────► expired      (excluded from context)
-```
+Cells don't get deleted when updated. They transition:
 
-### Example: balance changes mid-case
-
-```typescript
-// Initial account data
-memory.write({
-  key: "balance456",
-  value: { usd: 142.50, asOf: "2024-06-20T10:00:00Z" },
-  kind: "fact",
-  source: "tool:getAccount",
-  criticality: 0.6,
-});
-
-// ... later, balance changes ...
-
-memory.supersede(
-  "balance456",
-  { usd: 97.25, asOf: "2024-06-20T14:30:00Z" },
-  "tool:getAccount",
-);
-// Old entry now has status: "superseded"
-// New entry is active with updated value
+```mermaid
+stateDiagram-v2
+  [*] --> active: write()
+  active --> superseded: supersede()
+  active --> quarantined: quarantine()
+  active --> expired: TTL reached
+  superseded --> [*]: kept for audit
 ```
 
-## What belongs in each kind
+Example: account balance changes mid-case.
 
+```python
+# Initial balance from getAccount
+cell = write_fact(scope={"case": "456"}, content={"balance_usd": 142.50})
+
+# Later refresh — supersede, never delete
+supersede(old_cell_id=cell["cell_id"], new_content={"balance_usd": 97.25})
+# Old cell: status=superseded (audit trail preserved)
+# New cell: status=active
 ```
-constraint   Hard rule — survives context pressure, never dropped
-             "never waive fee without approval"
-             "account 456: no outbound transfers"
 
-fact         World state with a timestamp; may be superseded
-             Account balance, transaction list, risk score
+Compliance teams ask: *what did the agent know at decision time?* Superseded cells answer that.
 
-plan         Current task, steps, progress tracker
+## What belongs in each cell type
 
-observation  Raw tool output — may be large, low priority
-             Compressible; only recent 3 injected by default
-
-scratch      Planner working notes — discarded after case closes
-```
+| Type | Purpose | Example | Dropped under pressure? |
+|------|---------|---------|------------------------|
+| `constraint` | Hard rule | no outbound transfers | **Never** |
+| `fact` | World state | balance, transaction list | Ranked by criticality |
+| `preference` | Soft guidance | user prefers concise answers | Often |
+| `episode` | Turn summary | "user asked about balance" | Compressible |
 
 ## Anti-pattern: summarise-to-remember
 
-```typescript
-// Feels like memory. Loses: structure, provenance, timestamps, auditability.
-const "memory" = await llm.summarise(messages);
-
-// Use summarisation only for context compression (Chapter 5),
-// never as the primary state store.
+```python
+# Feels like memory. Loses structure, provenance, timestamps, auditability.
+memory = llm.summarise(entire_chat_history)
 ```
 
-**Companion:** `stateful-agent-lab/src/memory.ts`
+Summarisation is a **compression** technique for context (chapter 5). It is not a memory architecture. If your agent's only memory is a summary string, you cannot answer: *which policy was active at step 14?*
+
+## Run it
+
+Start memcell-rl and seed case 456:
+
+```bash
+uvicorn memcell_rl.app:app --port 8000
+python examples/casebot_regulated.py --dry-run
+```
+
+The script calls `seed_case_memory()` before the loop runs. Inspect what was written:
+
+```bash
+curl "http://localhost:8000/v1/cells/list?scope=%7B%22case%22%3A%22456%22%7D"
+```
+
+## Exercise
+
+Add a second constraint: `"flagAccount requires supervisor approval"`. Write it via the API. Re-run CaseBot. Does `fetch_memcell_context()` include both constraints?
+
+**Companion:** [`memcell-rl`](https://github.com/adu3110/memcell-rl) — `POST /v1/cells/write`, `POST /v1/cells/decide`
 
 **Next →** [Typed Memory Objects](./05-typed-memory.md)

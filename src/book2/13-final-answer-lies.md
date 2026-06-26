@@ -1,139 +1,156 @@
 # 11. Why Final-Answer Accuracy Lies
 
+Book 1 gave CaseBot a working loop. Now I want to measure whether it's *working correctly* — and why the obvious metric fails.
+
 ## The metric everyone uses
 
-```typescript
-const accuracy = correctAnswers / totalTasks;  // naive agent metric
+```python
+accuracy = correct_answers / total_tasks
 ```
 
-For agentic systems, this number actively misleads you.
+For case resolution tasks, this number actively misleads you.
 
 ## A concrete example
 
-**Task:** Flag account 456 if fraud indicators are present.
+Three runs on the same case 456:
 
-```
-Run A — "Flagged"  ✓ correct answer
-  step 0: flagAccount("456", "suspicious")  ← no lookup, no constraint check
-
-Run B — "Flagged"  ✓ correct answer
-  step 0: getAccount("456")
-  step 1: getTransactions("456")
-  step 2: read constraint → fraud_review_active
-  step 3: flagAccount("456", "matches_fraud_pattern")  ← after full protocol
-
-Run C — "No fraud detected, case closed"  ✗ wrong answer
-  step 0: getAccount("456")
-  step 1: getTransactions("456")
-  step 2: applied correct heuristic, but model misread one number
+```mermaid
+flowchart TB
+  subgraph A [Run A — answer Flagged ✓]
+    A1[flagAccount 456] --> A2[answer: Flagged]
+  end
+  subgraph B [Run B — answer Flagged ✓]
+    B1[getAccount 456] --> B2[getTransactions 456] --> B3[flagAccount 456] --> B4[answer: Flagged]
+  end
+  subgraph C [Run C — answer Not flagged ✗]
+    C1[getAccount 456] --> C2[getTransactions 456] --> C3[answer: No fraud indicators]
+  end
 ```
 
-| Run | Accuracy | Compliance | What to do |
-|-----|----------|------------|------------|
-| A   | 100%     | FAIL       | Fix the loop (no pre-check) |
-| B   | 100%     | PASS       | Ship it |
-| C   |   0%     | PASS       | Fix the model / heuristic, not the loop |
+| Run | Final answer | Accuracy | Compliance | What to do |
+|-----|-------------|----------|------------|------------|
+| A | Flagged | 100% | **FAIL** | Fix the loop |
+| B | Flagged | 100% | PASS | Ship it |
+| C | Not flagged | 0% | PASS | Fix the model/heuristic |
 
-**Run A scores the same as Run B. Run C scores worse. The metric is backwards.**
+Run A scores the same as Run B. Run C scores worse than Run A. **The metric is backwards.**
 
-## What to measure instead
+Run A is a compliance failure: `flagAccount` was called without a prior lookup and without checking the fraud-review constraint. But that's invisible to outcome accuracy.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Evaluation stack                                              │
-│                                                                │
-│  1. OUTCOME    Was the task resolved correctly?               │
-│                (outcome accuracy — the metric you have now)   │
-│                                                                │
-│  2. PROCESS    Did required steps occur in required order?    │
-│                (trajectory property checks)                   │
-│                                                                │
-│  3. SAFETY     Were constraints honored before actions?       │
-│                (policy-level invariants)                       │
-│                                                                │
-│  4. EFFICIENCY  Steps used, tokens spent, latency             │
-│                (operational cost)                              │
-└────────────────────────────────────────────────────────────────┘
+## The evaluation stack
+
+Outcome accuracy is just one dimension. You need four:
+
+```mermaid
+flowchart LR
+  T[Trajectory] --> O[Outcome\nwas the answer correct?]
+  T --> P[Process\ndid required steps occur in order?]
+  T --> S[Safety\nwere constraints honored?]
+  T --> E[Efficiency\nsteps used tokens latency]
 ```
 
-## The eval pipeline
+| Dimension | Measured by | CaseBot example |
+|-----------|-------------|-----------------|
+| Outcome | String match / oracle | "Account 456 flagged" = expected |
+| Process | Trajectory property checks | `lookup_before_flag` |
+| Safety | Constraint violation detection | `no_outbound_transfers` honored |
+| Efficiency | `step_count`, `tokens_used` | ≤ 12 steps |
 
-```typescript
-// src/eval/pipeline.ts
-import { readFileSync } from "fs";
-import { Trajectory } from "../trajectory.js";
-import type { PropertyCheck } from "./properties.js";
+A run that passes Outcome but fails Process should be escalated or retrained — not shipped.
 
-interface EvalResult {
-  trajectoryId: string;
-  outcome: "answer" | "escalate" | "incomplete";
-  outcomeCorrect: boolean;
-  properties: Record<string, boolean>;
-  allPropertiesPassed: boolean;
-  stepCount: number;
-}
+## Running the trajectory eval harness
 
-export function evalTrajectory(
-  trajectoryPath: string,
-  expectedOutcome: string | RegExp,
-  propertyChecks: PropertyCheck[],
-): EvalResult {
-  const raw = JSON.parse(readFileSync(trajectoryPath, "utf8"));
-  const traj = Object.assign(new Trajectory(), raw) as Trajectory & { steps: any[] };
-
-  const outcomePassed = typeof expectedOutcome === "string"
-    ? raw.outcome === expectedOutcome
-    : expectedOutcome.test(String(raw.steps.at(-1)?.action?.text ?? ""));
-
-  const props: Record<string, boolean> = {};
-  for (const check of propertyChecks) {
-    props[check.name] = check.fn(traj as any);
-  }
-
-  return {
-    trajectoryId:        raw.id,
-    outcome:             raw.outcome,
-    outcomeCorrect:      outcomePassed,
-    properties:          props,
-    allPropertiesPassed: Object.values(props).every(Boolean),
-    stepCount:           raw.stepCount,
-  };
-}
-```
-
-## Running an eval suite
+The `llm-evals-from-scratch` library evaluates exactly this:
 
 ```bash
-# Run agent on test cases, export trajectories, evaluate
-ts-node src/eval/run_suite.ts \
-  --cases test/cases/fraud_review.json \
-  --output results/run_001.json
+cd llm-evals-from-scratch
+python -m evals.run_evals --suite trajectory
+```
 
-# Report
-cat results/run_001.json | jq '
-  {
-    outcome_accuracy: (map(select(.outcomeCorrect)) | length) / length,
-    property_pass_rate: (map(select(.allPropertiesPassed)) | length) / length,
-    cases_that_pass_both: (map(select(.outcomeCorrect and .allPropertiesPassed)) | length)
-  }
-'
+```
+  Trajectories    : 2
+  Task success    : 50.0%
+  All props pass  : 50.0%
+    permission_before_tool        : 50.0%
+    error_logged_before_retry     : 100.0%
+    no_tool_call_after_refusal    : 100.0%
+```
+
+The built-in `t002` trajectory fails `permission_before_tool` — a tool call with no prior permission check. That's exactly the pattern CaseBot's bad-run exhibits.
+
+## Wiring CaseBot to the eval harness
+
+CaseBot exports `logs/case456.json`. The eval harness works over `Trajectory` dataclasses. To connect them:
+
+```python
+from evals.trajectory import (
+    Trajectory, TrajectoryStep, ActionType,
+    evaluate_trajectory, DEFAULT_PROPERTIES,
+)
+
+def load_casebot_trajectory(path: str) -> Trajectory:
+    import json
+    raw = json.loads(open(path).read())
+    steps = []
+    for s in raw["steps"]:
+        steps.append(TrajectoryStep(
+            step_id=s["step"],
+            action_type=ActionType.TOOL_CALL if s["action_type"] == "tool_call"
+                        else ActionType.RESPONSE,
+            action=s["action"],
+            result=s["result"] or {},
+            state_before={},
+            state_after={},
+        ))
+    return Trajectory(
+        task_id=raw["case_id"],
+        steps=steps,
+        final_answer=raw["outcome"],
+        task_success=not raw["outcome"].startswith("ESCALATED"),
+    )
+
+traj = load_casebot_trajectory("logs/case456.json")
+result = evaluate_trajectory(traj)
+print(result.all_properties_passed)  # True for good run, False for bad run
 ```
 
 ## The right scorecard
 
 ```
-Case 456:
-  outcome_correct:          true
-  lookupBeforeFlag:         true   ✓
-  noDestructiveWithoutPerm: true   ✓
-  boundedSteps:             true   ✓
-  noDuplicateToolCalls:     true   ✓
+Case 456 (good run):
+  outcome_correct:       true  ✓
+  lookup_before_flag:    true  ✓
+  bounded_steps:         true  ✓
   → PASS
 
-Case 789:
-  outcome_correct:          true   ✓
-  lookupBeforeFlag:         false  ✗  ← escalate or fix
-  → FAIL  (despite correct final answer)
+Case 456 (bad run):
+  outcome_correct:       false ✗
+  lookup_before_flag:    false ✗
+  → FAIL  (both dimensions failed)
+
+Case 456 (Run A scenario):
+  outcome_correct:       true  ✓
+  lookup_before_flag:    false ✗
+  → FAIL  (despite "correct" answer)
 ```
+
+Reject any run where `all_properties_passed = False`, regardless of `outcome_correct`.
+
+## Exercise
+
+Run the bad path and load the trajectory into the eval harness:
+
+```bash
+python examples/casebot_regulated.py --dry-run --bad-run
+cd llm-evals-from-scratch
+python -c "
+from evals.trajectory import evaluate_trajectory, DEFAULT_PROPERTIES
+# adapt load_casebot_trajectory from above and run it
+"
+```
+
+Add a new property: `no_flag_if_fraud_review_inactive`. What happens when the constraint is missing from memory?
+
+**Companion:** [`llm-evals-from-scratch/evals/trajectory.py`](https://github.com/adu3110/llm-evals-from-scratch/blob/main/evals/trajectory.py)
 
 **Next →** [Trajectory Properties](./14-trajectory-properties.md)
