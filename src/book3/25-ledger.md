@@ -2,126 +2,225 @@
 
 Book 1 was one agent, one case. Book 3 is multiple agents on the same case — or on related cases running in parallel. The first question is: how do they share state?
 
-The naive answer is: send messages between agents. That breaks immediately in regulated workflows. Messages can be lost, reordered, or arrive after a decision was already made. There's no audit trail. You can't replay what happened.
+The wrong answer, which most teams reach for first: a shared dict or direct agent-to-agent messages. Chapter 21 explains why those break. The right answer is an append-only, hash-chained log that all agents can read and any agent can write to (within their permissions). That log is the ledger.
 
-The better answer: **agents never communicate directly. They all write to a shared ledger and read from it.**
+## What a ledger gives you
 
-## The coordination problem
+An append-only ledger with typed entries provides four things that matter for regulated systems:
+
+**Ordering** — every entry has a sequence number. You can always reconstruct what each agent knew at any point, by replaying entries up to that sequence.
+
+**Attribution** — every entry has an `agent` field. You know who wrote what.
+
+**Conflict detection** — when two agents disagree about the same fact, the ledger detects the contradiction automatically.
+
+**Tamper evidence** — a SHA-256 hash chain means you can detect if any historical entry was modified. `verify_chain()` returns `False` if the ledger was altered after the fact.
 
 ```mermaid
 flowchart LR
-  subgraph bad [Direct messaging — breaks]
-    A1[DiagnoserAgent] --message--> A2[FixerAgent]
-    A2 --message--> A1
-    Note1[race conditions\nno audit trail\ncannot replay]
-  end
-  subgraph good [Ledger-based — works]
-    B1[DiagnoserAgent] --> L[(LEDGER.md)]
-    B2[FixerAgent] --> L
-    B3[ResolverAgent] --> L
-    L --> Note2[append-only\nhash-chained\nreplayable]
-  end
+  A1[InvestigatorAgent] --> L[(LEDGER.md\nhash-chained\nappend-only)]
+  A2[PolicyAgent] --> L
+  A3[ResolverAgent] --> L
+  L --> A1
+  L --> A2
+  L --> A3
+  L --> S[(Immutable\narchive)]
 ```
 
-## How `agent-ledger` works
+## The data structure
 
-Every agent action is appended as a typed entry:
+From `agent-ledger/python/ledger.py`:
 
 ```python
+from __future__ import annotations
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+import hashlib, json, time
+
 class EntryType(str, Enum):
-    PLAN        = "PLAN"
-    TOOL_CALL   = "TOOL_CALL"
-    OBSERVATION = "OBSERVATION"
-    CONFLICT    = "CONFLICT"
-    RESOLUTION  = "RESOLUTION"
-    CHECKPOINT  = "CHECKPOINT"
-    ANSWER      = "ANSWER"
+    PLAN        = "PLAN"         # task assignment
+    TOOL_CALL   = "TOOL_CALL"    # agent called an external tool
+    OBSERVATION = "OBSERVATION"  # agent wrote a fact to shared state
+    CONFLICT    = "CONFLICT"     # ledger detected contradiction
+    RESOLUTION  = "RESOLUTION"   # resolver resolved conflict
+    ESCALATE    = "ESCALATE"     # requires human action
+    HUMAN_APPROVAL = "HUMAN_APPROVAL"  # human approved/rejected
+    CHECKPOINT  = "CHECKPOINT"   # snapshot for fast replay
+    ANSWER      = "ANSWER"       # final case resolution
+
+@dataclass
+class LedgerEntry:
+    seq: int               # 0-indexed sequence
+    agent: str             # who wrote this
+    etype: EntryType       # what kind of entry
+    content: dict[str, Any]
+    prev_hash: str         # SHA-256 of previous entry's hash
+    entry_hash: str        # SHA-256 of this entry's content + prev_hash
+    ts: str                # ISO 8601
+
+class AgentLedger:
+    def __init__(self, path: str):
+        self.path = path
+        self.entries: list[LedgerEntry] = []
+        self._load()
+
+    def append(
+        self,
+        agent: str,
+        etype: EntryType,
+        content: dict,
+    ) -> LedgerEntry:
+        seq = len(self.entries)
+        prev_hash = self.entries[-1].entry_hash if self.entries else "0" * 64
+
+        # Compute this entry's hash
+        raw = json.dumps({
+            "seq": seq, "agent": agent, "etype": etype.value,
+            "content": content, "prev_hash": prev_hash,
+        }, sort_keys=True)
+        entry_hash = hashlib.sha256(raw.encode()).hexdigest()
+
+        entry = LedgerEntry(
+            seq=seq, agent=agent, etype=etype, content=content,
+            prev_hash=prev_hash, entry_hash=entry_hash,
+            ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        )
+        self.entries.append(entry)
+        self._persist(entry)
+        return entry
+
+    def verify_chain(self) -> tuple[bool, str]:
+        for i, entry in enumerate(self.entries):
+            expected_prev = self.entries[i-1].entry_hash if i > 0 else "0" * 64
+            if entry.prev_hash != expected_prev:
+                return False, f"chain broken at seq {i}"
+            raw = json.dumps({
+                "seq": entry.seq, "agent": entry.agent,
+                "etype": entry.etype, "content": entry.content,
+                "prev_hash": entry.prev_hash,
+            }, sort_keys=True)
+            if hashlib.sha256(raw.encode()).hexdigest() != entry.entry_hash:
+                return False, f"hash mismatch at seq {i}"
+        return True, "ok"
 ```
 
-Each entry has a SHA-256 hash chained to the previous:
+The hash chain is the tamper-evidence mechanism. Each entry's hash includes the previous entry's hash. If you modify entry 3, entry 4's `prev_hash` no longer matches entry 3's `entry_hash`. `verify_chain()` detects it in O(n) time.
 
-```python
-def compute_hash(self, prev_hash: str) -> str:
-    payload = f"{self.seq}|{prev_hash}|{json.dumps(self.content, sort_keys=True)}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+## What the LEDGER.md file looks like
+
+The ledger persists as a Markdown file with one JSON block per entry:
+
+```markdown
+<!-- seq=0 agent=InvestigatorAgent etype=PLAN ts=2026-01-15T14:30:00Z -->
+```json
+{"assignments": [{"agent": "InvestigatorAgent", "task": "gather_account_data"}]}
+```
+<!-- hash=a3f8b2... prev=000000... -->
+
+<!-- seq=1 agent=InvestigatorAgent etype=TOOL_CALL ts=2026-01-15T14:30:01Z -->
+```json
+{"tool": "getAccount", "args": {"accountId": "456"}, "result": {"balance": 142.50}}
+```
+<!-- hash=7c9d1f... prev=a3f8b2... -->
+
+<!-- seq=2 agent=InvestigatorAgent etype=OBSERVATION ts=2026-01-15T14:30:02Z -->
+```json
+{"key": "account_status", "value": "active"}
+```
+<!-- hash=2b4e8a... prev=7c9d1f... -->
 ```
 
-Tamper any entry → `verify_chain()` fails. Every action is permanently attributable to a specific agent at a specific time.
-
-## The ledger as audit log
-
-```
-[0001] PLAN        DiagnoserAgent  2026-06-26T10:00:01Z  hash=8adecb7c
-[0002] TOOL_CALL   DiagnoserAgent  2026-06-26T10:00:02Z  hash=4ae8e139
-[0003] OBSERVATION DiagnoserAgent  2026-06-26T10:00:03Z  hash=eedce462
-[0004] CHECKPOINT  DiagnoserAgent  2026-06-26T10:00:04Z  hash=1f23a409
-[0005] PLAN        FixerAgent      2026-06-26T10:00:05Z  hash=9bc3e71a
-[0006] OBSERVATION FixerAgent      2026-06-26T10:00:06Z  hash=2d47f8b0
-[0007] OBSERVATION DiagnoserAgent  2026-06-26T10:00:07Z  hash=5e6d9c12  ← CONFLICT
-[0008] CONFLICT    ResolverAgent   2026-06-26T10:00:08Z  hash=3a1b7f44
-[0009] RESOLUTION  ResolverAgent   2026-06-26T10:00:09Z  hash=7c0e5d21
-```
-
-Anyone can read `LEDGER.md` and reconstruct exactly what happened — no log aggregation system required.
+Human-readable. Machine-parseable. Each entry's position in the file corresponds to its sequence number.
 
 ## Running it
 
 ```bash
 cd agent-ledger/python
+pip install -e .
 OPENAI_API_KEY=sk-... python ledger.py
 ```
 
-Output:
+The demo runs two agents (Investigator and PolicyAgent) against a shared ledger, introduces a deliberate OBSERVATION conflict, and shows the Resolver handling it:
 
 ```
-  Total entries    : 22
-  Hash chain valid : True
-  Conflict detected between DiagnoserAgent and FixerAgent on 'requires_migration'
-  Resolution: Store event_id in KV cache; no schema migration needed.
+[seq=0] InvestigatorAgent: PLAN
+[seq=1] InvestigatorAgent: TOOL_CALL getAccount
+[seq=2] InvestigatorAgent: OBSERVATION requires_migration=False
+[seq=3] PolicyAgent: OBSERVATION requires_migration=True    ← conflict!
+[seq=4] InvestigatorAgent: CONFLICT on key requires_migration
+[seq=5] ResolverAgent: RESOLUTION → requires_migration=True (policy override)
+[seq=6] InvestigatorAgent: ANSWER → migration required, escalating
+
+Chain valid: True
 ```
 
-The full ledger is in `LEDGER.md` — plain text, git-diff friendly, human-readable.
+After the run, open `LEDGER.md`. Every entry is visible. Every entry is linked to the one before it via the hash chain.
 
-## Conflict detection
+## State reconstruction
 
-Two agents can write contradictory OBSERVATION entries for the same key:
+The ledger's `state()` method replays all entries to compute current state:
 
 ```python
-fixer.observe("requires_migration", "no")
-diagnoser.observe("requires_migration", "yes")   # contradicts FixerAgent
-
-conflicts = ledger.detect_conflicts()
-# [(entry for "no", entry for "yes")]
+def state(self) -> dict:
+    s = {}
+    for e in self.entries:
+        if e.etype == EntryType.OBSERVATION:
+            s[e.content.get("key", "")] = e.content.get("value")
+        elif e.etype == EntryType.RESOLUTION:
+            # Resolved value from conflict
+            key = e.content.get("key")
+            val = e.content.get("resolved_value")
+            if key:
+                s[key] = val
+        elif e.etype == EntryType.CHECKPOINT:
+            s = dict(e.content.get("snapshot", {}))
+    return s
 ```
 
-The `ResolverAgent` mediates — calls an LLM with both values and appends a RESOLUTION entry. The ledger is now consistent and auditable.
+Any agent can call `ledger.state()` to read current state. No agent can modify past entries. This is exactly the contract you want for regulated coordination.
 
-## Replay
+## Why the ledger beats shared dicts
 
-To reconstruct state at any point in time:
+```
+Shared mutable dict:
+  agent_a["risk"] = "low"
+  agent_b["risk"] = "high"   ← last write wins, no history
+  # who wrote "high"? when? what did agent_a think it was overwriting?
+
+Append-only ledger:
+  seq=2  InvestigatorAgent: OBSERVATION risk=low    (14:32:01)
+  seq=3  PolicyAgent:       OBSERVATION risk=high   (14:32:03)
+  seq=4  Resolver:          CONFLICT on key risk
+  seq=5  Resolver:          RESOLUTION risk=high (policy override, fraud_engine_v2)
+  # complete history, attribution, conflict resolution, audit trail
+```
+
+The dict approach loses information. The ledger accumulates it.
+
+## Linking to Book 1 trajectories
+
+Each Book 1 trajectory is a single-agent step log. Each ledger is a multi-agent coordination log. They're linked by `case_id`:
 
 ```python
-# What did the system know after entry 5?
-state = ledger.replay(up_to_seq=5)
-# Replay all entries → reconstruct dict
+# Single agent (Book 1)
+trajectory = Trajectory(case_id="456", task=task)
+# logs to logs/case456.json
+
+# Multi-agent coordination (Book 3)
+ledger = AgentLedger("cases/456/LEDGER.md")
+# each agent's tool calls + observations logged here
 ```
 
-This matters in regulated workflows: if an agent made a bad decision, you can rewind the ledger to the decision point and see exactly what it knew.
-
-## The CaseBot extension (Book 3)
-
-In a multi-agent case resolution:
-
-- `DiagnoserAgent` — reads account and transactions, logs observations
-- `PolicyAgent` — checks active constraints from memcell-rl, logs restrictions  
-- `FixerAgent` — proposes resolution given both agents' observations
-- `AuditorAgent` — reads the full ledger, verifies chain, exports compliance report
-
-Each agent runs its Book 1 loop independently. They coordinate only via the ledger. No direct messages. No shared in-memory state.
+For a complete audit of case 456: combine the per-agent `Trajectory` exports with the shared `LEDGER.md`. The trajectory shows what each agent did step by step. The ledger shows how they coordinated.
 
 ## Exercise
 
-Run `ledger.py` and open `LEDGER.md`. Find the CONFLICT entry. What would happen if you deleted entry 7 manually? Run `verify_chain()` to confirm tamper detection.
+1. Run the agent-ledger demo. Inspect `LEDGER.md`. Count the entries. Verify the hash chain manually: compute `sha256(entry_0)` and confirm it matches `prev_hash` in entry 1.
+
+2. Manually edit one character in `LEDGER.md` (in the content of seq=2). Run `verify_chain()`. Does it detect the modification? At which sequence?
+
+3. Add a fourth agent: `AuditAgent`. It should run after the Resolver and append a summary OBSERVATION: `{"key": "audit_complete", "value": True}`. Check that `ledger.state()["audit_complete"] == True` after the run.
 
 **Companion:** [`agent-ledger/python/ledger.py`](https://github.com/adu3110/agent-ledger/blob/main/python/ledger.py)
 
