@@ -1,4 +1,4 @@
-# 18. Benchmark Design
+# 2.8 Benchmark Design
 
 Good benchmarks for agent systems are boring. Not because the problem is easy, but because every interesting benchmark I've seen turned out to be a proxy for something more fundamental — and when teams optimized the proxy, the actual failure mode survived.
 

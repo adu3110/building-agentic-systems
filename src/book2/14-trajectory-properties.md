@@ -1,4 +1,8 @@
-# 12. Trajectory Properties
+# 2.2 Trajectory Properties
+
+## Where we are
+
+Chapter 2.1 showed why final-answer accuracy hides compliance failures. Now we define the **property checks** that catch those failures on the trajectory JSON.
 
 I want to measure more than whether CaseBot gave the right answer. I want to know *how* it got there. Trajectory properties are the mechanism for that.
 

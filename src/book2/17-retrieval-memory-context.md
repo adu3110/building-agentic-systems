@@ -1,4 +1,4 @@
-# 15. Retrieval vs Memory vs Context
+# 2.5 Retrieval vs Memory vs Context
 
 Three different things. Agents confuse them constantly. Let me pin down exactly what each one is and when to use each.
 

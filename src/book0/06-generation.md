@@ -1,4 +1,4 @@
-# 6. Generation — how the model produces text
+# 0.6 Generation — how the model produces text
 
 We've built up the full forward pass: tokens → embeddings → N transformer layers → a matrix of contextualized vectors. Now we need to turn those vectors into actual text. This chapter covers the final step: how a vector becomes the next word, and how that loop produces a paragraph.
 

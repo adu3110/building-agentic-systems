@@ -1,4 +1,12 @@
-# 15. Context assembly under a budget
+# 1.7 Context assembly under a budget
+
+## Where we are
+
+After chapter 1.6: CaseBot has typed memory cells in-process. Constraints are selected first. The assembler logic exists — but not yet as a durable HTTP service.
+
+## What we're fixing this chapter
+
+We connect to **memcell-rl** and call `POST /v1/cells/decide` each turn. Memory is what the agent knows; context is what the LLM sees. This chapter closes the gap.
 
 Memory is what the agent knows. Context is what the LLM sees this turn. These are two different things, and the gap between them is where many agents go wrong.
 
@@ -157,4 +165,17 @@ This works until:
 
 Budget-aware context assembly is more work upfront but prevents all of these problems. The constraint always appears. The cost is predictable. The context is curated.
 
-**Next →** [Planning and scratchpads](./08-planning.md)
+## What changed in CaseBot
+
+```
+fetch_memcell_context() → POST /v1/cells/decide
+Per-step memory refresh after each successful tool call
+```
+
+Context is assembled from typed cells under a token budget — not from raw chat history.
+
+## What breaks next
+
+Infrastructure is solid. The **planner** is still a hardcoded script. Chapter 1.8 makes it a swappable function (script today, LLM with `--live` later) without touching the loop.
+
+**Next →** [1.8 Planning and scratchpads](./08-planning.md)

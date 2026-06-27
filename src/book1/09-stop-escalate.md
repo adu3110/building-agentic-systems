@@ -1,4 +1,12 @@
-# 17. Stop conditions and escalation
+# 1.9 Stop conditions and escalation
+
+## Where we are
+
+After chapter 1.8: CaseBot has a swappable planner. A bad planner can flag before lookup, loop on duplicates, or burn tokens until someone kills the process.
+
+## What we're fixing this chapter
+
+Every exit from the loop gets a **name**: `ESCALATED:duplicate_tool_call`, `ESCALATED:tool_error:...`, `ESCALATED:max_steps_exceeded`. Escalation is success — not a crash.
 
 An agent that never stops burns money. An agent that stops silently is worse. Every exit from the loop must be named, logged, and routed correctly.
 
@@ -132,4 +140,18 @@ Without tool error escalation: a permission failure might be silently retried, o
 
 Each stop condition is cheap to implement and prevents a class of expensive failures.
 
-**Next →** [Putting it together — CaseBot](./11-together.md)
+## What changed in CaseBot
+
+```
+seen_calls set — duplicate (tool, args) detection
+Tool failure → ESCALATED (no retry loop)
+MAX_STEPS hard ceiling
+```
+
+The loop always exits cleanly with a named outcome.
+
+## What breaks next
+
+All layers exist in the build steps. Chapter 1.10 wires them into **`casebot_regulated.py`** — the complete system with property checks.
+
+**Next →** [1.10 Putting it together — CaseBot](./11-together.md)

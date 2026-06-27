@@ -1,6 +1,14 @@
-# 12. Trajectory logging
+# 1.4 Trajectory logging
+
+## Where we are
+
+After chapter 1.3: CaseBot has a loop and a tool registry. Tools run. But there is no record of what happened — no audit trail.
+
+## What we're fixing this chapter
 
 Compliance asks: *was `getAccount` called before `flagAccount`?* A chat transcript can't answer that. A string of LLM outputs can't answer that. A **trajectory** — an ordered, structured log of every action and result — can.
+
+We add trajectory logging **before** memory (chapters 1.5–1.7) on purpose: first you must be able to prove what the agent did. Then we'll see why chat history fails as memory.
 
 Run step 4:
 
@@ -168,4 +176,16 @@ When you run CaseBot and it produces a result, the trajectory is what happened �
 
 Book 2 is built entirely on this principle: measure the *trajectory*, not the *outcome*. The trajectory is what compliance cares about. The outcome is just the conclusion.
 
-**Next →** [Chat history is not memory](./04-state.md)
+## What changed in CaseBot
+
+```
+Loop → Tools → Trajectory (JSON: steps, tools_used, outcome, timestamps)
+```
+
+Every action and result is logged. Failed tool calls are logged before escalation.
+
+## What breaks next
+
+The agent logs what it *did*, but not what it *knew*. If you store state as chat history, constraints get dropped after a dozen turns. Chapter 1.5 demonstrates that failure.
+
+**Next →** [1.5 Chat history is not memory](./04-state.md)

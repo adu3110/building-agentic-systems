@@ -1,4 +1,12 @@
-# 16. Planning and scratchpads
+# 1.8 Planning and scratchpads
+
+## Where we are
+
+After chapter 1.7: CaseBot has loop, tools, trajectory, typed memory, and budget-aware context. The planner is still a hardcoded list inside the loop.
+
+## What we're fixing this chapter
+
+We extract **planning** into a function with a fixed signature: `(step, trajectory, memory_context) → Action`. Same loop — swap scripted planner for LLM without rewriting infrastructure.
 
 The planner is the reasoning component of the agent — the part that decides what to do next. So far we've been using hardcoded scripts. This chapter shows why the planner is a separate function, what its signature should be, and how to replace a script with an LLM without changing anything else.
 
@@ -168,4 +176,17 @@ Critically: **scratchpads are not stored as memory**. They're ephemeral working 
 
 Store results as cells. Keep scratchpads as scratchpads.
 
-**Next →** [Stop conditions and escalation](./09-stop-escalate.md)
+## What changed in CaseBot
+
+```
+planner(step, trajectory, memory_context) → Action
+good_run_planner / bad_run_planner / make_live_planner (--live)
+```
+
+Reasoning is swappable. The loop, registry, and trajectory are not.
+
+## What breaks next
+
+A bad planner can loop forever or retry the same tool. Chapter 1.9 adds **stop conditions** — duplicate detection, tool-error escalation, max steps.
+
+**Next →** [1.9 Stop conditions and escalation](./09-stop-escalate.md)

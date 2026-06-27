@@ -1,4 +1,4 @@
-# 28. Multi-Agent Orchestration
+# 3.8 Multi-Agent Orchestration
 
 There are three patterns worth knowing. I'll describe each, say when I'd use it, and note what goes wrong with each in regulated contexts.
 

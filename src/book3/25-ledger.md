@@ -1,4 +1,4 @@
-# 22. Append-Only Coordination Logs
+# 3.2 Append-Only Coordination Logs
 
 Book 1 was one agent, one case. Book 3 is multiple agents on the same case — or on related cases running in parallel. The first question is: how do they share state?
 

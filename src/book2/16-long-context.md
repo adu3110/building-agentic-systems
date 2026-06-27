@@ -1,8 +1,12 @@
-# 22. Long-Context Failure Modes
+# 2.4 Long-Context Failure Modes
 
-128k-token context windows were supposed to solve the memory problem. Just put everything in the context — all the history, all the facts, all the constraints — and the model will have everything it needs. No special memory system required.
+## Where we are
 
-This doesn't work. The failures are predictable, measurable, and completely separate from whether your model is "good enough." Let me show you the three modes that matter for agent systems, with benchmarks you can run.
+You can diagnose failure layers (2.3). Now: **why does the model "forget" constraints that are technically in the prompt?**
+
+## What we're fixing this chapter
+
+**Act 3 of Book 2:** three measurable failure modes — needle retrieval, recency conflict, distractor injection — and the architectural fix (typed memory, not longer context).
 
 ## Mode 1: Needle retrieval failure (lost in the middle)
 

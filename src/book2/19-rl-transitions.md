@@ -1,4 +1,4 @@
-# 17. RL-Ready Transitions
+# 2.7 RL-Ready Transitions
 
 Every time memcell-rl's `decide()` runs, it records a transition:
 

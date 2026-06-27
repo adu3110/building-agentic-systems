@@ -1,4 +1,12 @@
-# 13. Chat history is not memory
+# 1.5 Chat history is not memory
+
+## Where we are
+
+After chapter 1.4: CaseBot has loop + tools + trajectory. The agent can act and prove what it did. But **what the agent knows each turn** is still undefined — most tutorials just append chat messages.
+
+## What we're fixing this chapter
+
+We run step 05 and watch a fraud constraint disappear from context after 12 turns — not because anyone deleted it, but because chat history truncation dropped it. This chapter names the problem. Chapters 1.6–1.7 fix it.
 
 Most tutorials on LLM agents treat "memory" as a growing list of messages that gets appended to the prompt. Let's see exactly why this breaks, and what to do instead.
 
@@ -135,6 +143,12 @@ The next two chapters build this.
 
 **Truncation is a policy.** Deciding what to drop when the budget is tight is a decision that should be made deliberately, based on the type and criticality of each piece of information — not by blindly keeping the last N characters.
 
-Chapter 6 builds the in-process typed memory. Chapter 7 connects it to memcell-rl's HTTP API. Both chapters demonstrate that the constraint always survives — even under tight budget conditions, even after 50 turns.
+## What changed in CaseBot
 
-**Next →** [Typed memory cells](./05-typed-memory.md)
+Nothing new in the running system yet — this chapter **defines the failure** that chapters 1.6–1.7 fix. You now know: chat history ≠ memory ≠ context.
+
+## What breaks next
+
+Naive truncation drops constraints. Chapter 1.6 adds typed memory cells — constraints, facts, episodes — with different lifetimes and priorities.
+
+**Next →** [1.6 Typed memory cells](./05-typed-memory.md)

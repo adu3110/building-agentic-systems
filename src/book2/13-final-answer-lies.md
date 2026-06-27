@@ -1,6 +1,14 @@
-# 19. Why Final-Answer Accuracy Lies
+# 2.1 Why Final-Answer Accuracy Lies
 
-Here's the failure mode that made me stop trusting accuracy as the primary metric for agent evaluation.
+## Where we are
+
+Book 1 complete. CaseBot runs, logs trajectories, passes property checks on the good run and fails them on `--bad-run`. You're ready to evaluate — but **what should you measure?**
+
+## What we're fixing this chapter
+
+Teams default to final-answer accuracy. We show why that number hides compliance violations — and why trajectory properties are the right metric for regulated agents.
+
+**Act 1 of Book 2:** measure behavior, not answers.
 
 > **Note:** The numbers below (50 cases, 92% accuracy, 84% compliance) are **illustrative** — the pattern is real, but they come from a hypothetical evaluation run, not a bundled dataset you can reproduce exactly. CaseBot's runnable checks are the property functions in `casebot_regulated.py` and `evals/casebot.py`.
 

@@ -1,4 +1,4 @@
-# 23. Conflict Detection and Resolution
+# 3.3 Conflict Detection and Resolution
 
 Two agents can look at the same account and reach opposite conclusions. That's not a failure of the system — it can be intentional. A fraud investigation should have an InvestigatorAgent checking raw account data and a separate PolicyAgent checking the fraud engine output. If they agree, great. If they disagree, the system needs to notice and resolve the contradiction before any downstream action is taken.
 

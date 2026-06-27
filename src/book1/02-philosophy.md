@@ -1,4 +1,12 @@
-# 9. Overview — a task is not an agent
+# 1.1 A task is not an agent
+
+## Where we are
+
+You finished Book 0 (or skipped here if you already know LLMs). CaseBot does not exist yet. You have a repo and a case description — nothing runs.
+
+## What we're fixing this chapter
+
+We need to see clearly that **a task string is not an agent**. Before writing any loop code, we run step 01 and watch nothing happen. That emptiness is the starting point.
 
 Run this first:
 
@@ -117,8 +125,6 @@ Before we build the right architecture, it's worth understanding what the wrong 
 | All of the above but no stop conditions | The agent loops, retries the same tool, burns tokens and money |
 | Everything above but no property checks | The agent passes 92% of cases correctly but has silent compliance failures in 8% |
 
-Each chapter adds one piece. By chapter 10, we have a system that handles all five.
-
 ## The rules for this book
 
 1. **Run the code before you read the explanation.** See the output, then understand why.
@@ -126,4 +132,14 @@ Each chapter adds one piece. By chapter 10, we have a system that handles all fi
 3. **Scripts before LLMs.** Every build step uses a hardcoded plan — not an LLM. If the system fails with a hardcoded plan, the bug is in the infrastructure, not the model.
 4. **Same case throughout.** Account 456. Same fixture data. Same compliance rules. The architecture is what changes.
 
-**Next →** [The minimal loop](./03-agent-loop.md)
+Each chapter adds one piece. By chapter 1.10, we have a system that handles all five.
+
+## What changed in CaseBot
+
+After this chapter: **nothing runs** — but you have the problem statement, the fixture data for account 456, and a map of the five layers we'll add.
+
+## What breaks next
+
+A task string can't act. Chapter 1.2 adds the minimal loop — and step 02 will fail on `getTransactions` because there is no tool registry yet.
+
+**Next →** [1.2 The minimal loop](./03-agent-loop.md)

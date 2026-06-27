@@ -1,4 +1,4 @@
-# 29. Regulated Deployment
+# 3.9 Regulated Deployment
 
 A regulator, an auditor, or a senior engineer will ask five questions about any production agent system. Let me walk through each and show how the architecture answers it.
 

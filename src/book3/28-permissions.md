@@ -1,4 +1,4 @@
-# 25. Permissions and Sensitive Memory
+# 3.5 Permissions and Sensitive Memory
 
 Two separate things that are often conflated: ledger immutability and access control. An append-only ledger guarantees no one can change the past. It does not guarantee that every agent can read every entry. Those are different problems.
 

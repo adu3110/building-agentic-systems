@@ -1,4 +1,4 @@
-# 16. Memory Policies and Forgetting
+# 2.6 Memory Policies and Forgetting
 
 Not everything should stay in memory forever. Without explicit forgetting, three bad things happen: token budgets blow up with stale data, expired facts compete with fresh ones for context space, and PII accumulates past its legal retention window. Forgetting is not a cleanup job — it's a **policy** wired into every memory operation.
 

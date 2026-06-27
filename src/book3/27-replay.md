@@ -1,4 +1,4 @@
-# 24. Replay and Checkpoints
+# 3.4 Replay and Checkpoints
 
 An append-only ledger gives you something that most agent systems don't have: the ability to reconstruct exactly what any agent knew at any point in the case's history. Not approximately. Exactly.
 

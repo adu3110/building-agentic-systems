@@ -1,4 +1,4 @@
-# 8. Workflows vs agents — when to use each
+# 0.8 Workflows vs agents — when to use each
 
 We understand what an LLM can and can't do. Now the design question: when do you need an agent — a loop where the LLM decides each step — and when is a simpler workflow enough?
 
@@ -174,6 +174,14 @@ These conditions don't hold for sending confirmation emails. They do hold for re
 
 You now understand the complete picture: what an LLM is, how it produces text, what it structurally cannot do, and when to build an agent around it vs. when a simpler system is enough.
 
-Book 1 builds the agent for CaseBot, layer by layer. Every architectural decision points back to a specific limit we just identified.
+Book 1 builds the agent for CaseBot, layer by layer. Every architectural decision points back to a specific limit from chapter 0.7.
 
-**Next →** [Book 1: Building the system — task, loop, tools, memory, trajectory](../book1/02-philosophy.md)
+| Limit (0.7) | Book 1 chapter |
+|-------------|----------------|
+| No external actions | 1.3 Tools |
+| No audit trail | 1.4 Trajectory |
+| No durable memory | 1.5–1.7 Memory |
+| No process enforcement | 1.3 Permissions + 1.9 Stops |
+| Context window finite | 1.5–1.7 Budget assembly |
+
+**Next →** [Book 1 Roadmap — start building CaseBot](../book1/00-roadmap.md)

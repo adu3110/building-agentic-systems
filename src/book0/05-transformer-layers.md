@@ -1,4 +1,4 @@
-# 5. Transformer layers — stacking attention into depth
+# 0.5 Transformer layers — stacking attention into depth
 
 One round of attention gives each token a context-aware update. But one round isn't enough to capture the full complexity of language. Stacking multiple layers lets the model build progressively more abstract representations. Let's see how.
 

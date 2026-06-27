@@ -1,4 +1,4 @@
-# 26. Human-in-the-Loop
+# 3.6 Human-in-the-Loop
 
 HITL is not a fallback. In regulated workflows it's a designed state — a point in the case where the system intentionally stops and waits for a human before proceeding. The agent knows this. The case status says so. The ledger records it.
 

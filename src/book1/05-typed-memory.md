@@ -1,4 +1,12 @@
-# 14. Typed memory cells
+# 1.6 Typed memory cells
+
+## Where we are
+
+After chapter 1.5: you saw constraints vanish from context when chat history grows. CaseBot still has no structured memory.
+
+## What we're fixing this chapter
+
+Every piece of state gets a **type** (constraint, fact, episode), **scope** (case 456), **criticality**, and **lifecycle**. Constraints are injected first — they don't compete with tool output for budget.
 
 The previous chapter showed what breaks when memory is just a list of strings. This chapter builds the alternative: a typed cell store where every piece of information has a type, a scope, a criticality, and a lifecycle.
 
@@ -169,7 +177,20 @@ The semantics are identical to what we built here. The same types, the same scop
 
 ```bash
 uvicorn memcell_rl.app:app --port 8000
-python3 examples/build/step07_memcell.py
+python3 examples/build/step07_memcell.py   # used in ch 1.7
 ```
 
-**Next →** [Context assembly under a budget](./06-context-assembly.md)
+## What changed in CaseBot
+
+```
+MemoryCell { type, scope, content, criticality, status }
+decide() — constraints first, then facts/episodes by criticality
+```
+
+Constraints survive budget pressure. Old facts are superseded, not deleted.
+
+## What breaks next
+
+Typed cells live in an in-process store in step 06. Chapter 1.7 connects to **memcell-rl** over HTTP — durable, shared, production-ready context assembly.
+
+**Next →** [1.7 Context assembly under a budget](./06-context-assembly.md)

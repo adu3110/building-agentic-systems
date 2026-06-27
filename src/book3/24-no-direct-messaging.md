@@ -1,10 +1,12 @@
-# 29. Why Direct Messaging Breaks
+# 3.1 Why Direct Messaging Breaks
 
-When people design multi-agent systems for the first time, they build agent-to-agent messaging. It feels natural — agents are like people, people send messages to each other, why not agents?
+## Where we are
 
-The problem is that agent-to-agent messages have none of the properties you actually need in a regulated system. They're not ordered, not auditable, not replayable. When two agents disagree about the same fact, there's no record of either claim. When something goes wrong, you can't reconstruct what happened.
+Book 1: one CaseBot, one case. Book 2: you can measure and ship it reliably. Now: **what happens when InvestigatorAgent, PolicyAgent, and ResolverAgent all work case 456 at once?**
 
-Let me show you each failure mode concretely.
+## What we're fixing this chapter
+
+Direct agent-to-agent messaging feels natural but loses ordering, attribution, and conflict detection. We name the failure modes before building the fix (chapter 3.2: the ledger).
 
 ## Failure 1: Messages vanish
 

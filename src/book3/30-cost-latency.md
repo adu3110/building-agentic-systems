@@ -1,4 +1,4 @@
-# 27. Cost and Latency Control
+# 3.7 Cost and Latency Control
 
 Agents spend money in loops. Each step is potentially an LLM call, a tool API call, and a memory decide call. If you don't control this, costs compound and you discover it on a billing cycle, not on a dashboard.
 

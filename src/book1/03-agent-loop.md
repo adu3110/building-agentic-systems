@@ -1,4 +1,12 @@
-# 10. The minimal loop
+# 1.2 The minimal loop
+
+## Where we are
+
+After chapter 1.1: you have a task string for account 456. Nothing executes.
+
+## What we're fixing this chapter
+
+An agent needs to **act and observe in a loop** — not just describe what it would do. We add the smallest loop that runs steps in sequence.
 
 An agent loop is: **decide → act → observe → repeat**.
 
@@ -73,11 +81,11 @@ for step, (name, args) in enumerate(script):
 
 Three things to notice:
 
-**1. `script` is the planner.** Right now the plan is hardcoded. In chapter 8, we replace this with a function. In the live mode (chapter 8+), we replace it with an LLM call. But the loop itself doesn't change — only what produces the next action changes.
+**1. `script` is the planner.** Right now the plan is hardcoded. In chapter 1.8, we replace this with a function. In `--live` mode, we replace it with an LLM call. But the loop itself doesn't change — only what produces the next action changes.
 
-**2. The loop ends when it gets an answer or an error.** This is a stop condition. The loop doesn't run forever. It terminates on completion or failure. We'll make these termination conditions more sophisticated in chapter 9.
+**2. The loop ends when it gets an answer or an error.** This is a stop condition. The loop doesn't run forever. It terminates on completion or failure. We'll make these termination conditions more sophisticated in chapter 1.9.
 
-**3. Step 1 fails because `getTransactions` has no handler.** This is intentional — the loop fails gracefully (it prints the error and stops) rather than crashing or silently skipping the step. Chapter 3 builds the tool registry that makes dispatch explicit.
+**3. Step 1 fails because `getTransactions` has no handler.** This is intentional — the loop fails gracefully (it prints the error and stops) rather than crashing or silently skipping the step. Chapter 1.3 builds the tool registry that makes dispatch explicit.
 
 ## Why not just call the LLM once?
 
@@ -141,8 +149,18 @@ script = [
 ]
 ```
 
-Now the same tool is called twice with the same arguments. This runs fine right now. But when a human reviews the trajectory: why was the account looked up twice? If the case took 15 minutes and two tool calls, and someone doubled the cost for no reason, that's a problem. Chapter 9 adds duplicate detection that catches this automatically.
+Now the same tool is called twice with the same arguments. This runs fine right now. But when a human reviews the trajectory: why was the account looked up twice? If the case took 15 minutes and two tool calls, and someone doubled the cost for no reason, that's a problem. Chapter 1.9 adds duplicate detection that catches this automatically.
 
-Every chapter adds a mechanism that closes one of these holes.
+## What changed in CaseBot
 
-**Next →** [Tools from scratch](./07-tools.md)
+```
+Task string → Loop (hardcoded script) → inline getAccount handler only
+```
+
+The loop exists. Only one tool works. Everything else returns `tool not defined`.
+
+## What breaks next
+
+Step 02 fails on `getTransactions` because there is no registry — tools are hardcoded inside the loop. Chapter 1.3 adds `ToolRegistry`.
+
+**Next →** [1.3 Tools from scratch](./07-tools.md)

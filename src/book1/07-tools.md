@@ -1,4 +1,12 @@
-# 11. Tools from scratch
+# 1.3 Tools from scratch
+
+## Where we are
+
+After chapter 1.2: CaseBot has a loop with a hardcoded script. `getAccount` works inline; every other tool returns `tool not defined`.
+
+## What we're fixing this chapter
+
+The loop needs a **registry** — explicit tool surface, structured results, permission checks before any side effect.
 
 The agent needs to interact with the world — read account data, fetch transactions, flag an account. These interactions happen through tools. And tools need to be built carefully.
 
@@ -158,6 +166,20 @@ if name == "flagAccount":
 
 Now run it. `flagAccount` succeeds. But there's no check that `getAccount` ran first. The tool executed, but the compliance constraint (lookup before flag) was not enforced.
 
-Chapter 4 logs the order of tool calls. Book 2 checks that order automatically. For now, notice: the registry enforces permissions. It does not enforce process order. Those are two separate concerns that require separate mechanisms.
+Chapter 1.4 logs the order of tool calls. Book 2 checks that order automatically. For now, notice: the registry enforces permissions. It does not enforce process order. Those are two separate concerns that require separate mechanisms.
 
-**Next →** [Trajectory logging](./10-trajectory.md)
+## What changed in CaseBot
+
+```
+Loop → ToolRegistry (getAccount, getTransactions, flagAccount)
+       ToolResult { success, data, error }
+       Permissions: read:accounts, write:accounts
+```
+
+Tools are explicit. Unknown tools are rejected. Permission failures return structured errors.
+
+## What breaks next
+
+The agent can act, but nothing is **logged**. A regulator asking "did you lookup before flag?" gets no answer. Chapter 1.4 adds trajectory logging.
+
+**Next →** [1.4 Trajectory logging](./10-trajectory.md)

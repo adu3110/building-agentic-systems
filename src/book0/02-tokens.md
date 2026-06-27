@@ -1,4 +1,4 @@
-# 2. Tokens — the alphabet of a language model
+# 0.2 Tokens — the alphabet of a language model
 
 A neural network operates on numbers. But language is made of characters, words, sentences. To feed text into a neural network, you have to convert it into numbers first. The question is: what unit do you use?
 

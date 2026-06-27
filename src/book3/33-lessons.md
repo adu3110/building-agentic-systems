@@ -1,4 +1,4 @@
-# 38. Lessons Learned
+# 3.10 Lessons Learned
 
 I want to end with what actually mattered — not a summary of chapters, but the things that changed how I think about building these systems. The ideas that seem simple in a book but took real experience to actually believe.
 

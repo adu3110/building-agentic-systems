@@ -1,4 +1,12 @@
-# 18. Putting it together — CaseBot
+# 1.10 Putting it together — CaseBot
+
+## Where we are
+
+After chapters 1.1–1.9: every layer exists in the build steps — loop, tools, trajectory, memory, context, planner, stops. This chapter assembles them into one file.
+
+## What we're fixing this chapter
+
+Nothing new conceptually — **integration**. Run the full CaseBot, verify good run and bad run, confirm property checks pass and fail as expected.
 
 Steps 2–9 added one layer at a time. Step 10 is the complete system. Everything you built is in one file: `casebot_regulated.py`.
 
@@ -106,12 +114,20 @@ The compliance violation is caught by two independent mechanisms. Neither one is
 
 This is the architecture: the model proposes actions. Python decides whether to execute them. Python logs everything. Python checks the log.
 
-## Before Book 2
+## What changed in CaseBot
 
-You have a working agentic system. It handles a simple regulated case correctly, fails the wrong behavior in two different ways, logs every step, and can be run with a scripted plan (for testing) or a live LLM (for production).
+```
+casebot_regulated.py — all layers integrated
+--dry-run (scripted) / --bad-run (compliance demo) / --live (OpenAI planner)
+logs/case456.json + inline property checks
+```
 
-Book 2 asks: how do you know it *keeps* working? You add a feature (new tool, updated prompt, different memory policy). How do you know the compliance properties still hold? How do you measure whether the system degraded?
+Book 1 is complete. CaseBot runs end-to-end.
 
-The trajectory is the input to Book 2. Every piece of data Book 2 uses to evaluate the system comes from the logs you're already generating.
+## What comes next
 
-**Book 1 complete.** → [Why Final-Answer Accuracy Lies](../book2/13-final-answer-lies.md)
+Book 2 asks: **how do you know it keeps working?** When you change the prompt, upgrade the model, or tweak memory policy — do compliance properties still pass?
+
+The trajectory files you're already generating are the input to everything in Book 2.
+
+**Book 1 complete.** → [Book 2 Roadmap — making CaseBot reliable](../book2/00-roadmap.md)

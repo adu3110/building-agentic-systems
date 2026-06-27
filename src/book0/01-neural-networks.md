@@ -1,4 +1,4 @@
-# 1. What a neural network actually is
+# 0.1 What a neural network actually is
 
 Before we can talk about LLMs, agents, or any of that — we need to understand the actual machine sitting underneath all of it. Not "it's inspired by the brain." The real thing. The actual math, shown simply.
 

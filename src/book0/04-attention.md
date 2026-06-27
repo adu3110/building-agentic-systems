@@ -1,4 +1,4 @@
-# 4. Attention — how tokens look at each other
+# 0.4 Attention — how tokens look at each other
 
 This is the chapter that makes LLMs work. Attention is the mechanism that lets every token in a sequence look at every other token and decide how much to learn from it. Without attention, the network processes each token independently with no knowledge of context. With attention, "bank" in "river bank" can reach back to "river" and adjust its representation accordingly.
 

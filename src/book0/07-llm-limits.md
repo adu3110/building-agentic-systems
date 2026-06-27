@@ -1,4 +1,4 @@
-# 7. What the model cannot do alone
+# 0.7 What the model cannot do alone
 
 We now understand what an LLM is: a function that takes a sequence of tokens and produces a probability distribution over the next token. Run it in a loop and you get generated text.
 

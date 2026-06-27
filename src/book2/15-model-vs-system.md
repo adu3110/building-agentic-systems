@@ -1,4 +1,12 @@
-# 21. Model Failure vs System Failure
+# 2.3 Model Failure vs System Failure
+
+## Where we are
+
+You know accuracy lies (2.1) and how to write property checks (2.2). CaseBot fails sometimes — but **where** in the stack?
+
+## What we're fixing this chapter
+
+Before tuning the prompt, walk the failure taxonomy: memory write → retrieval → policy → model. Most "model bugs" are infrastructure bugs.
 
 When CaseBot gives a wrong answer, the instinct is to blame the model and tune the prompt. Most of the time, that is wrong. The failure is somewhere else in the stack — and if you don't diagnose before fixing, you'll spend weeks on the wrong layer while the real bug stays in production.
 

@@ -1,4 +1,4 @@
-# 3. Embeddings — turning integers into meaning
+# 0.3 Embeddings — turning integers into meaning
 
 We left off with the model receiving a list of integers like `[791, 8415, 9139]`. Now we need to convert those into something a neural network can actually do math with.
 

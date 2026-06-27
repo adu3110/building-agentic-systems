@@ -1,4 +1,4 @@
-# 20. Production Readiness
+# 2.10 Production Readiness
 
 "Production-ready" is not a state you reach. It's a set of properties you can verify. Here's the checklist I use before any agent system handles real cases.
 
@@ -74,4 +74,4 @@ Book 1 gave you a working loop. Book 2 gave you the ability to measure whether i
 
 Book 3 extends CaseBot to multiple agents: coordination, conflict resolution, human approval, and audit-grade deployment.
 
-**→** [Book 3: Why Direct Messaging Breaks](../book3/24-no-direct-messaging.md)
+**→** [Book 3 Roadmap — from one agent to many](../book3/00-roadmap.md)

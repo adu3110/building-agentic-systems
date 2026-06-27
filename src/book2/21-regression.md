@@ -1,4 +1,4 @@
-# 19. Regression Suites
+# 2.9 Regression Suites
 
 Agents regress silently. This is the thing I find teams underestimate most. Change the system prompt slightly — a new sentence added for clarity — and the planner starts returning steps in a different order. Upgrade the model from `gpt-4o-mini` to a newer version — recency sensitivity shifts and constraints at medium depth start getting missed. Tweak context assembly criticality thresholds — a different subset of facts enters context and a property check that was passing for three months quietly starts failing.
 
