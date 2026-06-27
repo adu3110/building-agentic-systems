@@ -4,35 +4,18 @@ Not everything should stay in memory forever. Without explicit forgetting, three
 
 ## What baseline_v0 does
 
-memcell-rl ships a policy called `baseline_v0`. Here is the logic in plain Python:
+memcell-rl ships a policy called `baseline_v0` in `memcell_rl/core/policy.py`. Simplified sketch:
 
 ```python
-def baseline_v0(cells: list[dict], token_budget: int, task: str) -> list[dict]:
-    active = [c for c in cells if c["status"] == "active"]
-
-    # 1. Constraints always included — cannot be dropped
-    constraints = [c for c in active if c["type"] == "constraint"]
-
-    # 2. Everything else ranked by criticality × recency
-    rest = sorted(
-        [c for c in active if c["type"] != "constraint"],
-        key=lambda c: c["policy_features"]["criticality"],
-        reverse=True,
-    )
-
-    # 3. Fit ranked cells into remaining budget
-    selected = list(constraints)
-    used = sum(estimate_tokens(c["content"]) for c in selected)
-    for cell in rest:
-        cost = estimate_tokens(cell["content"])
-        if used + cost <= token_budget:
-            selected.append(cell)
-            used += cost
-
-    return selected
+def baseline_v0(candidates, budget_tokens):
+    # 1. Suppress deleted / expired / superseded
+    # 2. Assign constraint mode when type=constraint and criticality >= 0.7
+    # 3. Sort: constraint mode > criticality > future_utility > score
+    # 4. Fill budget (token estimate = len(content)//4); log budget_exceeded
+    ...
 ```
 
-Constraints in, always. Everything else ranked by criticality, truncated at budget.
+Constraints get **priority in the sort key**, not a separate unconditional bypass. Under an extremely tight budget, even a constraint can be suppressed — test with `step07_memcell.py` at `budget_tokens=100`.
 
 ## The four forgetting mechanisms
 

@@ -80,17 +80,16 @@ CASEBOT_SUITE: list[PropertyCheck] = [
 ## Running the suite
 
 ```python
-from evals.trajectory import evaluate_trajectory, DEFAULT_PROPERTIES
+from evals.casebot import load_casebot_trajectory, CASEBOT_PROPERTIES, evaluate_trajectory
 
-# Load from casebot export
 traj = load_casebot_trajectory("logs/case456.json")
-
-# Run default properties
-result = evaluate_trajectory(traj)
+result = evaluate_trajectory(traj, properties=CASEBOT_PROPERTIES)
 print(result.all_properties_passed)
 for name, (passed, msg) in result.property_results.items():
     print(f"  {'PASS' if passed else 'FAIL'}  {name}: {msg}")
 ```
+
+CaseBot exports use `action_type: "answer"` and `"escalate"`. The adapter in `evals/casebot.py` maps those to the eval harness types.
 
 ```bash
 # Good run output

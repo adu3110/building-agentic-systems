@@ -29,83 +29,41 @@ flowchart LR
 
 ## The data structure
 
-From `agent-ledger/python/ledger.py`:
+From `agent-ledger/python/ledger.py` (actual API — run `python ledger.py` from that directory):
 
 ```python
-from __future__ import annotations
-from dataclasses import dataclass, field
 from enum import Enum
+from dataclasses import dataclass
 from typing import Any
-import hashlib, json, time
 
 class EntryType(str, Enum):
-    PLAN        = "PLAN"         # task assignment
-    TOOL_CALL   = "TOOL_CALL"    # agent called an external tool
-    OBSERVATION = "OBSERVATION"  # agent wrote a fact to shared state
-    CONFLICT    = "CONFLICT"     # ledger detected contradiction
-    RESOLUTION  = "RESOLUTION"   # resolver resolved conflict
-    ESCALATE    = "ESCALATE"     # requires human action
-    HUMAN_APPROVAL = "HUMAN_APPROVAL"  # human approved/rejected
-    CHECKPOINT  = "CHECKPOINT"   # snapshot for fast replay
-    ANSWER      = "ANSWER"       # final case resolution
+    PLAN        = "PLAN"
+    TOOL_CALL   = "TOOL_CALL"
+    OBSERVATION = "OBSERVATION"
+    CONFLICT    = "CONFLICT"
+    RESOLUTION  = "RESOLUTION"
+    CHECKPOINT  = "CHECKPOINT"
+    ANSWER      = "ANSWER"
 
 @dataclass
 class LedgerEntry:
-    seq: int               # 0-indexed sequence
-    agent: str             # who wrote this
-    etype: EntryType       # what kind of entry
+    seq: int               # 1-indexed in the running ledger
+    timestamp: str
+    agent: str
+    etype: EntryType
     content: dict[str, Any]
-    prev_hash: str         # SHA-256 of previous entry's hash
-    entry_hash: str        # SHA-256 of this entry's content + prev_hash
-    ts: str                # ISO 8601
+    hash: str = ""         # SHA-256 chain link (16-char hex in demo)
 
-class AgentLedger:
-    def __init__(self, path: str):
-        self.path = path
-        self.entries: list[LedgerEntry] = []
-        self._load()
-
-    def append(
-        self,
-        agent: str,
-        etype: EntryType,
-        content: dict,
-    ) -> LedgerEntry:
-        seq = len(self.entries)
-        prev_hash = self.entries[-1].entry_hash if self.entries else "0" * 64
-
-        # Compute this entry's hash
-        raw = json.dumps({
-            "seq": seq, "agent": agent, "etype": etype.value,
-            "content": content, "prev_hash": prev_hash,
-        }, sort_keys=True)
-        entry_hash = hashlib.sha256(raw.encode()).hexdigest()
-
-        entry = LedgerEntry(
-            seq=seq, agent=agent, etype=etype, content=content,
-            prev_hash=prev_hash, entry_hash=entry_hash,
-            ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        )
-        self.entries.append(entry)
-        self._persist(entry)
-        return entry
-
-    def verify_chain(self) -> tuple[bool, str]:
-        for i, entry in enumerate(self.entries):
-            expected_prev = self.entries[i-1].entry_hash if i > 0 else "0" * 64
-            if entry.prev_hash != expected_prev:
-                return False, f"chain broken at seq {i}"
-            raw = json.dumps({
-                "seq": entry.seq, "agent": entry.agent,
-                "etype": entry.etype, "content": entry.content,
-                "prev_hash": entry.prev_hash,
-            }, sort_keys=True)
-            if hashlib.sha256(raw.encode()).hexdigest() != entry.entry_hash:
-                return False, f"hash mismatch at seq {i}"
-        return True, "ok"
+class Ledger:
+    def append(self, agent: str, etype: EntryType, content: dict) -> LedgerEntry: ...
+    def verify_chain(self) -> bool: ...
+    def detect_conflicts(self) -> list[tuple[LedgerEntry, LedgerEntry]]: ...
+    def replay(self, up_to_seq: int | None = None) -> list[LedgerEntry]: ...
 ```
 
-The hash chain is the tamper-evidence mechanism. Each entry's hash includes the previous entry's hash. If you modify entry 3, entry 4's `prev_hash` no longer matches entry 3's `entry_hash`. `verify_chain()` detects it in O(n) time.
+Human escalation is modeled as `EntryType.RESOLUTION` or a dedicated `OBSERVATION` — the demo repo does not define separate `ESCALATE` / `HUMAN_APPROVAL` enum values. Extend the enum if your deployment needs them.
+
+The hash chain is the tamper-evidence mechanism. Each entry's `hash` is computed from the previous hash plus this entry's content. `verify_chain()` returns `False` if any link was altered.
 
 ## What the LEDGER.md file looks like
 

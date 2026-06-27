@@ -7,8 +7,12 @@ I want to show you how to build an agentic system from scratch — no LangChain,
 Each chapter adds **one layer** to the same system. You run code before you read theory. When something breaks, the next chapter fixes it.
 
 ```bash
+# Clone (if you don't have the repo yet):
 git clone https://github.com/adu3110/memcell-rl.git
 cd memcell-rl
+
+# Or, from this website workspace:
+cd repos/memcell-rl
 
 python3 examples/build/step01_task.py
 python3 examples/build/step02_loop.py
@@ -17,6 +21,7 @@ python3 examples/build/step02_loop.py
 # Step 10 — full CaseBot (needs memcell-rl server for live memory):
 uvicorn memcell_rl.app:app --port 8000   # terminal 1
 python3 examples/casebot_regulated.py --dry-run   # terminal 2
+# Optional: OPENAI_API_KEY=sk-... python3 examples/casebot_regulated.py --live
 ```
 
 **Finished artifact:** [`casebot_regulated.py`](https://github.com/adu3110/memcell-rl/blob/main/examples/casebot_regulated.py) — not the starting point. You get there by step 10.

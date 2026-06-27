@@ -7,7 +7,7 @@ Every code block runs. Book 1 is a build path: run `step01` … `step09`, then C
 ## Book 1 build path
 
 ```bash
-cd memcell-rl
+cd repos/memcell-rl   # from Aditi-website workspace; or cd memcell-rl if cloned standalone
 python3 examples/build/step01_task.py
 python3 examples/build/step02_loop.py
 # … through step09_stops.py

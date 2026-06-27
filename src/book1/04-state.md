@@ -1,43 +1,140 @@
-# 5. Chat history is not memory
+# 13. Chat history is not memory
 
-Most demos store "memory" as a growing chat list and send the last N tokens to the model. Run the failure:
+Most tutorials on LLM agents treat "memory" as a growing list of messages that gets appended to the prompt. Let's see exactly why this breaks, and what to do instead.
+
+Run step 5:
 
 ```bash
 python3 examples/build/step05_chat_memory.py
 ```
 
 ```
-turn  1: context  1214 chars  constraint visible=False
+turn  1: context  1214 chars  constraint visible=True
 turn  2: context  1214 chars  constraint visible=False
+turn  3: context  1214 chars  constraint visible=False
 ...
 turn 12: context  1214 chars  constraint visible=False
 
 Constraint from turn 1 is gone. Agent can violate policy.
 ```
 
-Turn 1 adds: `POLICY: no outbound transfers until review closes`.  
-Turns 2–12 add fat tool output. The assembler keeps the **last** 1200 characters. The constraint was at the **start** — gone after turn 1.
+Turn 1 adds: `POLICY: no outbound transfers until fraud review closes`.  
+Turns 2–12 add large tool outputs (account data, transaction lists). The assembler keeps only the last 1200 characters of the chat history. The constraint, at the start, was pushed out.
 
-This is not "the model forgot." **You never stored the rule as durable state.**
+The model was never told "forget the constraint." The code never deleted it. But it's not in the context anymore. The agent can now violate the policy without any indication that it's doing something wrong.
 
-## Three different things
+```mermaid
+flowchart TB
+  subgraph CH [Chat history]
+    M1[turn 1: POLICY constraint] --> M2[turn 2: tool output - 200 chars] --> MN[...turns 3-12: more tool outputs]
+  end
+  subgraph CW [Context window — 1200 char limit]
+    SUB[only the last 1200 chars make it in]
+  end
+  subgraph MEM [Typed memory — what we actually need]
+    C[constraint: permanent, always injected first]
+    F[facts: ranked by relevance]
+    E[episodes: most recent]
+  end
+  CH -.->|keeps recent only — DROPS constraint| CW
+  MEM -->|assembles by type and criticality| CW
+```
+
+## Three things that look the same but aren't
+
+This is the core confusion that the chat-history approach causes:
 
 ```
-chat history   = everything said (grows forever)
-context window = what the LLM sees this turn (budget capped)
-memory         = typed state you control (scoped, ranked, lifecycle)
+chat history   = everything that happened (grows forever, unstructured)
+context window = what the LLM sees this turn (budget-capped, curated)
+memory         = typed state you deliberately manage (scoped, ranked, lifecycle)
 ```
 
-Chapter 7 assembles context **from** memory. This chapter is why memory must exist separately from chat.
+**Chat history** is a log — it records everything. If you use it directly as the prompt, you eventually run out of context window. If you truncate it, you drop things. If you summarize it, you lose precision.
 
-## The naive assembler (what not to do)
+**The context window** is what actually goes to the LLM. It has a token budget. You choose what goes in it. Choosing poorly means the model doesn't see things it needs to see.
+
+**Memory** is what you, the system designer, are deliberately managing. A constraint is a fact with a specific type, scope, and lifecycle. It should be injected into the context window unconditionally, before anything else, regardless of how long the conversation has been running.
+
+The mistake is treating these three as the same thing. They're not.
+
+## Why naive truncation fails
+
+The naive assembler looks like this:
 
 ```python
-def context_from_chat(messages, max_chars=1200):
-    blob = "\n".join(messages)
-    return blob[-max_chars:]  # keep recent only → drops old constraints
+def build_context_naive(messages: list[str], max_chars: int = 1200) -> str:
+    full = "\n".join(messages)
+    return full[-max_chars:]   # keep only the last N characters
 ```
 
-Fix in chapter 6: constraints live in a cell store, injected **before** ranking everything else.
+This keeps recent content and drops old content. That's fine for episode data (what happened in the last few turns). It's catastrophic for constraints (rules that must always apply).
+
+"No outbound transfers until fraud review closes" is not episode data. It's not something that becomes less relevant as more turns pass. It's a hard constraint with policy authority. But a naive truncator doesn't know the difference between a constraint and a tool result — it just counts characters.
+
+## The fix: separate type from recency
+
+The right architecture stores different things differently:
+
+```python
+# Not just messages:
+memory = {
+    "constraints": ["no outbound transfers until fraud review closes"],
+    "facts": {
+        "account_456_balance": 142.50,
+        "account_456_status": "active"
+    },
+    "episodes": [   # recent tool calls — can be dropped if budget is tight
+        "turn 1: getAccount returned {'balance': 142.50}",
+        "turn 2: getTransactions returned [...]",
+    ]
+}
+
+def build_context(memory: dict, task: str, budget: int) -> str:
+    parts = []
+    
+    # 1. Constraints first — always included, regardless of budget
+    for c in memory["constraints"]:
+        parts.append(f"CONSTRAINT: {c}")
+    
+    # 2. Relevant facts — include until budget is used up
+    for key, value in memory["facts"].items():
+        if remaining_budget_allows():
+            parts.append(f"FACT: {key} = {value}")
+    
+    # 3. Recent episodes — fill remaining budget with most recent first
+    for episode in reversed(memory["episodes"]):
+        if remaining_budget_allows():
+            parts.append(f"EPISODE: {episode}")
+    
+    return "\n".join(parts)
+```
+
+Constraints are always included. Everything else competes for remaining budget, ranked by type and recency.
+
+## The deeper problem: constraints aren't messages
+
+A constraint isn't a message from a user. It's not an observation about the world. It's a typed fact with:
+
+- **Authority**: it comes from a policy engine, not from user input
+- **Scope**: it applies to case 456, not to all cases
+- **Lifecycle**: it's active until the fraud review closes, then superseded
+- **Criticality**: it should never be dropped under budget pressure
+
+None of these properties can be represented in a list of strings. You need a typed store.
+
+This is what memcell-rl provides: memory cells with type (`constraint`, `fact`, `episode`), scope (`{"case": "456"}`), criticality (0.0–1.0), and status (`active`, `superseded`, `expired`). The context assembler uses these properties to decide what goes into the prompt, in what order, up to what budget.
+
+The next two chapters build this.
+
+## What to take from this chapter
+
+**Memory is not the context window.** The context window is assembled from memory on demand. They're not the same thing.
+
+**Not all memory is equal.** Constraints, facts, and episodes have different lifetimes, different priorities, and different rules for when they can be dropped.
+
+**Truncation is a policy.** Deciding what to drop when the budget is tight is a decision that should be made deliberately, based on the type and criticality of each piece of information — not by blindly keeping the last N characters.
+
+Chapter 6 builds the in-process typed memory. Chapter 7 connects it to memcell-rl's HTTP API. Both chapters demonstrate that the constraint always survives — even under tight budget conditions, even after 50 turns.
 
 **Next →** [Typed memory cells](./05-typed-memory.md)
