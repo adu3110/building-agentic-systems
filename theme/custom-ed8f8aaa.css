@@ -1,0 +1,32 @@
+/* ── Sidebar part titles (# Book 1 etc.) ────────────────────────────────────*/
+
+.sidebar .part-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.5;
+  margin-top: 1.4rem;
+  padding-left: 0.75rem;
+}
+
+.sidebar ol li a {
+  padding: 0.2rem 0.75rem;
+  line-height: 1.4;
+}
+
+.sidebar ol li.active > a {
+  font-weight: 600;
+}
+
+/* ── h2/h3: plain, no borders ────────────────────────────────────────────────*/
+
+.content main h2 {
+  border: none;
+  padding: 0;
+}
+
+.content main h3 {
+  border: none;
+  padding: 0;
+}
