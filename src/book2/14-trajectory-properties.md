@@ -56,7 +56,7 @@ def ends_with_answer_or_escalate(traj: Trajectory) -> tuple[bool, str]:
     if not traj.steps:
         return False, "empty trajectory"
     final = traj.steps[-1].action_type
-    ok = final in ("response", "escalation")
+    ok = final in ("answer", "escalate")   # matches ActionType.ANSWER / ESCALATE
     return ok, f"final action: {final}"
 
 def no_pii_in_export(traj: Trajectory) -> tuple[bool, str]:

@@ -79,7 +79,8 @@ We've described single-head attention. Real LLMs run multiple attention heads in
 
 ```python
 def multi_head_attention(X, W_q, W_k, W_v, W_o, num_heads):
-    d_head = d_model // num_heads
+    d_model = len(X[0])            # embedding dim from input shape
+    d_head  = d_model // num_heads
     
     # Run H independent attention heads
     head_outputs = []

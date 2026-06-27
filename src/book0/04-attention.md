@@ -91,12 +91,12 @@ for i in range(3):
         row.append(dot)
     scores.append(row)
 
-# scores = [[2.0, 0.0, 0.0],
-#            [0.0, 2.0, 0.0],
-#            [1.0, 1.0, 0.0]]
+# scores = [[2.0, 0.0, 1.0],   ← Q[0]·K[0]=2, Q[0]·K[1]=0, Q[0]·K[2]=1
+#            [0.0, 2.0, 1.0],   ← Q[1]·K[0]=0, Q[1]·K[1]=2, Q[1]·K[2]=1
+#            [1.0, 1.0, 0.0]]   ← Q[2]·K[0]=1, Q[2]·K[1]=1, Q[2]·K[2]=0
 #
 # Token 0's query perfectly matches token 0's key (score=2.0)
-# Token 0's query doesn't match token 1's key at all (score=0.0)
+# Token 0 also partially matches token 2's key (score=1.0 — shared dim 2)
 ```
 
 ## Why divide by √d_k?
@@ -106,8 +106,8 @@ Before applying softmax, we divide every score by the square root of `d_k`:
 ```python
 # Step 2: scale by 1/sqrt(d_k)
 scaled_scores = [[s / math.sqrt(d_k) for s in row] for row in scores]
-# [[1.0, 0.0, 0.0],
-#  [0.0, 1.0, 0.0],
+# [[1.0, 0.0, 0.5],   ← 2.0/2, 0.0/2, 1.0/2
+#  [0.0, 1.0, 0.5],
 #  [0.5, 0.5, 0.0]]
 ```
 
@@ -129,9 +129,9 @@ def softmax(xs):
 
 # Step 3: apply softmax to each row
 attention_weights = [softmax(row) for row in scaled_scores]
-# [[0.576, 0.212, 0.212],   ← token 0 attends mostly to itself
-#  [0.212, 0.576, 0.212],   ← token 1 attends mostly to itself
-#  [0.422, 0.422, 0.155]]   ← token 2 splits attention between 0 and 1
+# [[0.506, 0.186, 0.307],   ← token 0 attends mostly to itself, some to token 2
+#  [0.186, 0.506, 0.307],   ← token 1 attends mostly to itself, some to token 2
+#  [0.384, 0.384, 0.233]]   ← token 2 splits evenly between 0 and 1
 ```
 
 Each row sums to 1. This is the attention pattern — how much each token attends to each other token.
@@ -151,8 +151,8 @@ for i in range(3):
             out[dim] += attention_weights[i][j] * V[j][dim]
     outputs.append(out)
 
-# outputs[0] ≈ [0.576×[1,2,3,4] + 0.212×[5,6,7,8] + 0.212×[9,10,11,12]]
-#            ≈ [3.27, 4.27, 5.27, 6.27]
+# outputs[0] ≈ [0.506×[1,2,3,4] + 0.186×[5,6,7,8] + 0.307×[9,10,11,12]]
+#            ≈ [4.20, 5.20, 6.20, 7.20]
 ```
 
 Token 0's new representation is a mixture of all token values, but heavily weighted toward itself and less toward the others. The mixture is exactly how relevant each token was to token 0.
